@@ -1,207 +1,200 @@
-"""Tests for openai-agents-skills."""
+"""Tests for Skill base class, SkillProtocol, and @skill decorator."""
+
+from __future__ import annotations
+
+from typing import Any
 
 import pytest
 
-from openai_agents_skills import Skill, skill
-from openai_agents_skills.skills import SkillRegistry
+from openai_agents_skills import Skill, SkillProtocol, skill
 
 # ---------------------------------------------------------------------------
-# Skill dataclass
+# Skill base class
 # ---------------------------------------------------------------------------
 
 
-class TestSkill:
-    """Tests for the Skill dataclass."""
+class TestSkillDefaults:
+    def test_name_default_is_empty_string(self) -> None:
+        sk = Skill()
+        assert sk.name == ""
 
-    def test_skill_minimal(self) -> None:
-        """A Skill can be created with only name and description."""
-        sk = Skill(name="my_skill", description="Does something useful.")
+    def test_description_default_is_empty_string(self) -> None:
+        sk = Skill()
+        assert sk.description == ""
+
+    def test_when_to_use_default_is_empty_string(self) -> None:
+        sk = Skill()
+        assert sk.when_to_use == ""
+
+    def test_is_enabled_defaults_to_true(self) -> None:
+        sk = Skill()
+        assert sk.is_enabled() is True
+
+    async def test_get_prompt_blocks_raises_not_implemented(self) -> None:
+        sk = Skill()
+        with pytest.raises(NotImplementedError):
+            await sk.get_prompt_blocks()
+
+    async def test_not_implemented_error_names_subclass(self) -> None:
+        class MySkill(Skill):
+            pass
+
+        with pytest.raises(NotImplementedError, match="MySkill"):
+            await MySkill().get_prompt_blocks()
+
+
+class TestSkillSubclass:
+    async def test_concrete_subclass_returns_blocks(self) -> None:
+        class ConciseSkill(Skill):
+            name = "concise"
+            description = "Be concise."
+
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                return [{"role": "user", "content": "Be concise."}]
+
+        blocks = await ConciseSkill().get_prompt_blocks()
+        assert blocks == [{"role": "user", "content": "Be concise."}]
+
+    async def test_get_prompt_blocks_receives_args(self) -> None:
+        class EchoSkill(Skill):
+            name = "echo"
+            description = "Echoes args into a block."
+
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                return [{"role": "user", "content": args}]
+
+        blocks = await EchoSkill().get_prompt_blocks(args="hello world")
+        assert blocks[0]["content"] == "hello world"
+
+    async def test_get_prompt_blocks_default_args_is_empty_string(self) -> None:
+        received: list[str] = []
+
+        class RecordingSkill(Skill):
+            name = "recording"
+            description = "Records args value."
+
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                received.append(args)
+                return []
+
+        await RecordingSkill().get_prompt_blocks()
+        assert received == [""]
+
+    async def test_get_prompt_blocks_can_return_multiple_blocks(self) -> None:
+        class MultiSkill(Skill):
+            name = "multi"
+            description = "Returns multiple blocks."
+
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                return [
+                    {"role": "user", "content": "block one"},
+                    {"role": "user", "content": "block two"},
+                ]
+
+        blocks = await MultiSkill().get_prompt_blocks()
+        assert len(blocks) == 2
+        assert blocks[0]["content"] == "block one"
+        assert blocks[1]["content"] == "block two"
+
+    async def test_get_prompt_blocks_can_return_empty_list(self) -> None:
+        class EmptySkill(Skill):
+            name = "empty"
+            description = "Returns no blocks."
+
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                return []
+
+        assert await EmptySkill().get_prompt_blocks() == []
+
+    def test_subclass_can_disable_via_is_enabled(self) -> None:
+        class DisabledSkill(Skill):
+            name = "disabled"
+            description = "Always disabled."
+
+            def is_enabled(self) -> bool:
+                return False
+
+        assert DisabledSkill().is_enabled() is False
+
+    def test_is_enabled_can_be_dynamic(self) -> None:
+        class ToggleSkill(Skill):
+            name = "toggle"
+            description = "Toggled externally."
+
+            def __init__(self, active: bool) -> None:
+                self._active = active
+
+            def is_enabled(self) -> bool:
+                return self._active
+
+        assert ToggleSkill(active=True).is_enabled() is True
+        assert ToggleSkill(active=False).is_enabled() is False
+
+    def test_class_attributes_are_overridable(self) -> None:
+        class NamedSkill(Skill):
+            name = "my_skill"
+            description = "My description."
+            when_to_use = "Use when you need my_skill."
+
+        sk = NamedSkill()
         assert sk.name == "my_skill"
-        assert sk.description == "Does something useful."
-        assert sk.tools == []
-        assert sk.instructions == ""
-        assert sk.metadata == {}
-
-    def test_skill_full(self) -> None:
-        """A Skill accepts tools, instructions, and metadata."""
-        dummy_tool = object()
-        sk = Skill(
-            name="full_skill",
-            description="Full skill.",
-            tools=[dummy_tool],
-            instructions="Extra instructions.",
-            metadata={"version": "1"},
-        )
-        assert sk.tools == [dummy_tool]
-        assert sk.instructions == "Extra instructions."
-        assert sk.metadata == {"version": "1"}
-
-    def test_skill_empty_name_raises(self) -> None:
-        """An empty skill name should raise ValueError."""
-        with pytest.raises(ValueError, match="name"):
-            Skill(name="", description="No name skill.")
+        assert sk.description == "My description."
+        assert sk.when_to_use == "Use when you need my_skill."
 
 
 # ---------------------------------------------------------------------------
-# SkillRegistry — registration
+# SkillProtocol
 # ---------------------------------------------------------------------------
 
 
-class TestSkillRegistryRegistration:
-    """Tests for SkillRegistry register / unregister / get."""
+class TestSkillProtocol:
+    def test_skill_subclass_satisfies_protocol(self) -> None:
+        class ConcreteSkill(Skill):
+            name = "concrete"
+            description = "Concrete skill."
 
-    def test_register_and_get(self) -> None:
-        registry = SkillRegistry()
-        sk = Skill(name="alpha", description="Alpha skill.")
-        registry.register(sk)
-        assert registry.get("alpha") is sk
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                return []
 
-    def test_register_overwrites(self) -> None:
-        registry = SkillRegistry()
-        sk1 = Skill(name="alpha", description="First.")
-        sk2 = Skill(name="alpha", description="Second.")
-        registry.register(sk1)
-        registry.register(sk2)
-        assert registry.get("alpha") is sk2
+        assert isinstance(ConcreteSkill(), SkillProtocol)
 
-    def test_get_unknown_raises(self) -> None:
-        registry = SkillRegistry()
-        with pytest.raises(KeyError, match="unknown"):
-            registry.get("unknown")
+    def test_duck_typed_object_satisfies_protocol(self) -> None:
+        class DuckSkill:
+            name = "duck"
+            description = "Duck-typed skill."
 
-    def test_unregister(self) -> None:
-        registry = SkillRegistry()
-        sk = Skill(name="beta", description="Beta skill.")
-        registry.register(sk)
-        registry.unregister("beta")
-        with pytest.raises(KeyError):
-            registry.get("beta")
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                return []
 
-    def test_unregister_unknown_raises(self) -> None:
-        registry = SkillRegistry()
-        with pytest.raises(KeyError, match="ghost"):
-            registry.unregister("ghost")
+        assert isinstance(DuckSkill(), SkillProtocol)
 
-    def test_skill_names_sorted(self) -> None:
-        registry = SkillRegistry()
-        for name in ("charlie", "alpha", "bravo"):
-            registry.register(Skill(name=name, description=f"{name} skill."))
-        assert registry.skill_names == ["alpha", "bravo", "charlie"]
+    def test_object_missing_name_does_not_satisfy_protocol(self) -> None:
+        class NoName:
+            description = "missing name attribute"
 
-    def test_skill_names_empty(self) -> None:
-        registry = SkillRegistry()
-        assert registry.skill_names == []
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                return []
 
+        assert not isinstance(NoName(), SkillProtocol)
 
-# ---------------------------------------------------------------------------
-# SkillRegistry — apply
-# ---------------------------------------------------------------------------
+    def test_object_missing_description_does_not_satisfy_protocol(self) -> None:
+        class NoDescription:
+            name = "no_desc"
 
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                return []
 
-class _FakeAgent:
-    """Minimal stand-in for agents.Agent used in apply() tests."""
+        assert not isinstance(NoDescription(), SkillProtocol)
 
-    def __init__(
-        self,
-        name: str = "TestAgent",
-        instructions: str = "",
-        tools: list | None = None,
-        model: str | None = None,
-        output_type: type | None = None,
-        handoffs: list | None = None,
-    ) -> None:
-        self.name = name
-        self.instructions = instructions
-        self.tools = tools or []
-        self.model = model
-        self.output_type = output_type
-        self.handoffs = handoffs or []
+    def test_object_missing_get_prompt_blocks_does_not_satisfy_protocol(self) -> None:
+        class NoMethod:
+            name = "no_method"
+            description = "missing method"
 
+        assert not isinstance(NoMethod(), SkillProtocol)
 
-class TestSkillRegistryApply:
-    """Tests for SkillRegistry.apply()."""
-
-    def test_apply_adds_tools(self) -> None:
-        registry = SkillRegistry()
-        tool_a = object()
-        sk = Skill(name="tool_skill", description="Adds a tool.", tools=[tool_a])
-        registry.register(sk)
-
-        agent = _FakeAgent(name="Agent")
-        result = registry.apply(agent, skill_names=["tool_skill"])
-
-        assert tool_a in result.tools
-
-    def test_apply_appends_instructions(self) -> None:
-        registry = SkillRegistry()
-        sk = Skill(
-            name="inst_skill",
-            description="Adds instructions.",
-            instructions="Be extra helpful.",
-        )
-        registry.register(sk)
-
-        agent = _FakeAgent(name="Agent", instructions="Base instructions.")
-        result = registry.apply(agent, skill_names=["inst_skill"])
-
-        assert "Base instructions." in result.instructions
-        assert "Be extra helpful." in result.instructions
-
-    def test_apply_empty_instructions_skips_separator(self) -> None:
-        """When agent has no instructions, no leading newline is prepended."""
-        registry = SkillRegistry()
-        sk = Skill(name="sk", description=".", instructions="Only instructions.")
-        registry.register(sk)
-
-        agent = _FakeAgent(name="Agent", instructions="")
-        result = registry.apply(agent, skill_names=["sk"])
-
-        assert result.instructions == "Only instructions."
-        assert not result.instructions.startswith("\n")
-
-    def test_apply_all_skills_when_names_is_none(self) -> None:
-        registry = SkillRegistry()
-        tool_x = object()
-        tool_y = object()
-        registry.register(Skill(name="x", description="X.", tools=[tool_x]))
-        registry.register(Skill(name="y", description="Y.", tools=[tool_y]))
-
-        agent = _FakeAgent(name="Agent")
-        result = registry.apply(agent, skill_names=None)
-
-        assert tool_x in result.tools
-        assert tool_y in result.tools
-
-    def test_apply_unknown_skill_raises(self) -> None:
-        registry = SkillRegistry()
-        agent = _FakeAgent(name="Agent")
-        with pytest.raises(KeyError, match="missing"):
-            registry.apply(agent, skill_names=["missing"])
-
-    def test_apply_preserves_existing_tools(self) -> None:
-        registry = SkillRegistry()
-        existing_tool = object()
-        new_tool = object()
-        sk = Skill(name="new", description="New.", tools=[new_tool])
-        registry.register(sk)
-
-        agent = _FakeAgent(name="Agent", tools=[existing_tool])
-        result = registry.apply(agent, skill_names=["new"])
-
-        assert existing_tool in result.tools
-        assert new_tool in result.tools
-
-    def test_apply_does_not_mutate_original_agent(self) -> None:
-        registry = SkillRegistry()
-        tool = object()
-        sk = Skill(name="sk", description=".", tools=[tool])
-        registry.register(sk)
-
-        agent = _FakeAgent(name="Agent", tools=[])
-        registry.apply(agent, skill_names=["sk"])
-
-        # Original agent's tools must be unchanged
-        assert agent.tools == []
+    def test_base_skill_satisfies_protocol(self) -> None:
+        assert isinstance(Skill(), SkillProtocol)
 
 
 # ---------------------------------------------------------------------------
@@ -210,28 +203,56 @@ class TestSkillRegistryApply:
 
 
 class TestSkillDecorator:
-    """Tests for the @skill factory decorator."""
+    def test_decorator_attaches_skill_name(self) -> None:
+        @skill(name="my_skill")
+        def factory() -> Skill:
+            return Skill()
 
-    def test_decorator_attaches_metadata(self) -> None:
-        @skill(name="decorated", description="A decorated factory.")
-        def make_skill() -> Skill:
-            return Skill(name="decorated", description="A decorated factory.")
+        assert factory.__skill_name__ == "my_skill"
 
-        assert make_skill.__skill_name__ == "decorated"
-        assert make_skill.__skill_description__ == "A decorated factory."
+    def test_decorator_attaches_description(self) -> None:
+        @skill(name="sk", description="A useful skill.")
+        def factory() -> Skill:
+            return Skill()
 
-    def test_decorator_factory_still_callable(self) -> None:
-        @skill(name="callable_skill", description="Still callable.")
-        def make_skill() -> Skill:
-            return Skill(name="callable_skill", description="Still callable.")
+        assert factory.__skill_description__ == "A useful skill."
 
-        result = make_skill()
+    def test_decorator_default_description_is_empty_string(self) -> None:
+        @skill(name="sk")
+        def factory() -> Skill:
+            return Skill()
+
+        assert factory.__skill_description__ == ""
+
+    def test_decorated_factory_remains_callable(self) -> None:
+        class ConcreteSkill(Skill):
+            name = "concrete"
+            description = "Concrete."
+
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                return []
+
+        @skill(name="concrete", description="Concrete.")
+        def factory() -> Skill:
+            return ConcreteSkill()
+
+        result = factory()
         assert isinstance(result, Skill)
-        assert result.name == "callable_skill"
 
-    def test_decorator_default_description(self) -> None:
-        @skill(name="no_desc")
-        def make_skill() -> Skill:
-            return Skill(name="no_desc", description="")
+    def test_decorator_does_not_call_the_factory(self) -> None:
+        call_count = 0
 
-        assert make_skill.__skill_description__ == ""
+        @skill(name="lazy")
+        def factory() -> Skill:
+            nonlocal call_count
+            call_count += 1
+            return Skill()
+
+        assert call_count == 0
+
+    def test_decorator_preserves_function_identity(self) -> None:
+        def factory() -> Skill:
+            return Skill()
+
+        decorated = skill(name="sk")(factory)
+        assert decorated is factory

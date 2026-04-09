@@ -1,200 +1,116 @@
 """Skills for the OpenAI Agents SDK.
 
-A Skill is a reusable, composable capability that can be applied to an Agent,
-bundling together tools, instructions, and context into a named unit — similar
-to Claude Skills but designed to work within the OpenAI Agents SDK agent loop.
+A Skill is a named, reusable prompt fragment injected into the LLM's context
+at the right moment in the agent loop via AgentHooks.on_llm_start.
 
-Usage::
+The SDK passes a mutable input_items list to AgentHooks.on_llm_start before
+every model invocation. SkillHooks prepends each skill's prompt blocks to that
+list so the model receives the skill's instructions on every call.
 
-    from agents import Agent
-    from openai_agents_skills import Skill, SkillRegistry, skill
+Example::
 
-    @skill(name="web_search", description="Search the web for information")
-    def web_search_skill() -> Skill:
-        from agents import function_tool
+    from openai_agents_skills import Skill, SkillHooks
+    from agents import Agent, Runner
 
-        @function_tool
-        def search(query: str) -> str:
-            # TODO: implement
-            return f"Results for: {query}"
+    class CitationSkill(Skill):
+        name = "citation"
+        description = "Always cite sources."
 
-        return Skill(
-            name="web_search",
-            description="Search the web for information",
-            tools=[search],
-            instructions="You can search the web to find up-to-date information.",
-        )
+        async def get_prompt_blocks(self, args: str = "") -> list:
+            return [{"role": "user", "content": "Always cite your sources."}]
 
-    # Apply a skill to an agent
-    registry = SkillRegistry()
-    registry.register(web_search_skill())
+    agent = Agent(
+        name="Assistant",
+        instructions="You are helpful.",
+        hooks=SkillHooks([CitationSkill()]),
+    )
 
-    agent = Agent(name="Assistant", instructions="You are helpful.")
-    agent_with_skills = registry.apply(agent, skill_names=["web_search"])
+    result = await Runner.run(agent, "What is the speed of light?")
 """
 
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass, field
-from typing import Any
-
-logger = logging.getLogger(__name__)
+from typing import Any, Protocol, runtime_checkable
 
 
-@dataclass
-class Skill:
-    """A reusable, composable capability for an OpenAI Agents SDK agent.
+@runtime_checkable
+class SkillProtocol(Protocol):
+    """Protocol that any skill implementation must satisfy.
 
-    A Skill bundles tools, instructions, and metadata into a single unit that
-    can be registered in a :class:`SkillRegistry` and applied to any
-    :class:`agents.Agent` at construction time or before a run.
-
-    Attributes:
-        name: Unique identifier for the skill.
-        description: Human-readable description of what the skill provides.
-        tools: List of function tools exposed by this skill.
-        instructions: Additional system-prompt fragment injected when the skill
-            is applied to an agent.
-        metadata: Arbitrary key/value pairs for extension points.
+    Any object with ``name``, ``description``, and ``get_prompt_blocks`` can be
+    used with :class:`~openai_agents_skills.hooks.SkillHooks` — subclassing
+    :class:`Skill` is not required.
     """
 
     name: str
     description: str
-    tools: list[Any] = field(default_factory=list)
-    instructions: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
 
-    def __post_init__(self) -> None:
-        if not self.name:
-            raise ValueError("Skill name must not be empty.")
+    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+        """Return prompt blocks to inject into the LLM's input_items list."""
+        ...
 
 
-class SkillRegistry:
-    """Registry for managing and applying :class:`Skill` instances.
+class Skill:
+    """Base class for bundled (code-defined) skills.
 
-    Skills are keyed by their :attr:`Skill.name`.  Applying a registry to an
-    agent merges the selected skills' tools and instructions into a new
-    :class:`agents.Agent` instance, leaving the original unchanged.
+    Subclass and override :meth:`get_prompt_blocks` to provide skill content.
+    The returned blocks are prepended to the LLM's ``input_items`` list before
+    each model invocation by :class:`~openai_agents_skills.hooks.SkillHooks`.
+
+    Class attributes:
+
+    Attributes:
+        name: Unique identifier for the skill.
+        description: Short human-readable summary. Shown in the manifest and
+            used by future routing logic.
+        when_to_use: Prose description of when the skill should be triggered,
+            including example phrases. Used by Phase 2 routing.
 
     Example::
 
-        registry = SkillRegistry()
-        registry.register(my_skill)
-        enriched_agent = registry.apply(agent, skill_names=["my_skill"])
+        class ReplyInBulletsSkill(Skill):
+            name = "reply_in_bullets"
+            description = "Instructs the agent to respond using bullet points."
+
+            async def get_prompt_blocks(self, args: str = "") -> list:
+                return [{"role": "user", "content": "Always respond using bullet points."}]
     """
 
-    def __init__(self) -> None:
-        self._skills: dict[str, Skill] = {}
+    name: str = ""
+    description: str = ""
+    when_to_use: str = ""
 
-    # ------------------------------------------------------------------
-    # Registration
-    # ------------------------------------------------------------------
+    def is_enabled(self) -> bool:
+        """Return True if this skill should be injected on the current call.
 
-    def register(self, skill: Skill) -> None:
-        """Register a :class:`Skill`, replacing any existing entry with the same name.
-
-        Args:
-            skill: The skill instance to register.
-        """
-        if skill.name in self._skills:
-            logger.debug("Overwriting existing skill %r in registry.", skill.name)
-        self._skills[skill.name] = skill
-        logger.debug("Registered skill %r.", skill.name)
-
-    def unregister(self, name: str) -> None:
-        """Remove a skill from the registry by name.
-
-        Args:
-            name: The :attr:`Skill.name` of the skill to remove.
-
-        Raises:
-            KeyError: If no skill with *name* is registered.
-        """
-        if name not in self._skills:
-            raise KeyError(f"No skill named {name!r} is registered.")
-        del self._skills[name]
-        logger.debug("Unregistered skill %r.", name)
-
-    def get(self, name: str) -> Skill:
-        """Retrieve a registered skill by name.
-
-        Args:
-            name: The :attr:`Skill.name` to look up.
+        Override to gate a skill dynamically on feature flags, runtime context,
+        or any other condition. Disabled skills are silently skipped by
+        :class:`~openai_agents_skills.hooks.SkillHooks`.
 
         Returns:
-            The matching :class:`Skill`.
-
-        Raises:
-            KeyError: If no skill with *name* is registered.
+            True if the skill is active; False to suppress injection.
         """
-        if name not in self._skills:
-            raise KeyError(f"No skill named {name!r} is registered.")
-        return self._skills[name]
+        return True
 
-    @property
-    def skill_names(self) -> list[str]:
-        """Return a sorted list of all registered skill names."""
-        return sorted(self._skills.keys())
+    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+        """Return prompt blocks to prepend to the LLM's input_items.
 
-    # ------------------------------------------------------------------
-    # Application
-    # ------------------------------------------------------------------
+        Each block should be a response-input-item dict, for example::
 
-    def apply(self, agent: Any, skill_names: list[str] | None = None) -> Any:
-        """Apply skills to an agent, returning a new agent with merged capabilities.
-
-        The original *agent* is not mutated.  Tools from each requested skill
-        are appended to the agent's existing tool list, and each skill's
-        :attr:`Skill.instructions` fragment is appended to the agent's system
-        instructions separated by a newline.
+            {"role": "user", "content": "Always be concise."}
 
         Args:
-            agent: An :class:`agents.Agent` instance to enrich.
-            skill_names: Names of skills to apply.  If *None*, all registered
-                skills are applied.
+            args: Optional space-separated arguments passed to the skill.
+                  Used by file-based skills for ``$arg_name`` substitution
+                  (Phase 3). Bundled skills may ignore this parameter.
 
         Returns:
-            A new :class:`agents.Agent` with the merged tools and instructions.
+            A list of input-item dicts to prepend to the LLM input.
 
         Raises:
-            KeyError: If a requested skill name is not registered.
+            NotImplementedError: Subclasses must override this method.
         """
-        names = skill_names if skill_names is not None else self.skill_names
-        skills = [self.get(n) for n in names]
-
-        merged_tools = list(agent.tools or [])
-        merged_instructions = agent.instructions or ""
-
-        for sk in skills:
-            merged_tools.extend(sk.tools)
-            if sk.instructions:
-                separator = "\n" if merged_instructions else ""
-                merged_instructions = merged_instructions + separator + sk.instructions
-            logger.debug("Applied skill %r to agent %r.", sk.name, agent.name)
-
-        # Import here to avoid a hard dependency at module load time —
-        # allows the module to be imported even in environments where
-        # openai-agents is not yet installed (e.g. during packaging).
-        from agents import Agent
-
-        return (
-            agent.clone(tools=merged_tools, instructions=merged_instructions)
-            if hasattr(agent, "clone")
-            else Agent(
-                name=agent.name,
-                instructions=merged_instructions,
-                tools=merged_tools,
-                model=getattr(agent, "model", None),
-                output_type=getattr(agent, "output_type", None),
-                handoffs=getattr(agent, "handoffs", []),
-            )
-        )
-
-
-# ---------------------------------------------------------------------------
-# Decorator helper
-# ---------------------------------------------------------------------------
+        raise NotImplementedError(f"{type(self).__name__} must implement get_prompt_blocks()")
 
 
 def skill(
@@ -203,23 +119,28 @@ def skill(
 ) -> Any:
     """Decorator that tags a factory function as a skill factory.
 
-    The decorated function must return a :class:`Skill` instance.  The
-    decorator is a lightweight annotation only — it does **not** call the
-    function or register the skill automatically.
+    The decorated function must return a :class:`Skill` instance. This
+    decorator is a lightweight annotation only — it does not call the function
+    or register the skill automatically. Its primary use is skill discovery
+    tooling (Phase 2+).
 
     Args:
-        name: The skill name (must match the returned :attr:`Skill.name`).
-        description: Optional description surfaced in tooling / docs.
+        name: The skill name. Should match the returned :attr:`Skill.name`.
+        description: Optional description surfaced in tooling and docs.
 
     Returns:
-        A decorator that annotates the factory function with skill metadata.
+        A decorator that attaches ``__skill_name__`` and
+        ``__skill_description__`` to the factory function.
 
     Example::
 
-        @skill(name="summariser", description="Summarise long documents")
-        def summariser_skill() -> Skill:
-            ...
-            return Skill(name="summariser", description="...", tools=[...])
+        @skill(name="summariser", description="Summarise long documents.")
+        def make_summariser() -> Skill:
+            return MySummariserSkill()
+
+        # Metadata available without calling the factory:
+        print(make_summariser.__skill_name__)         # "summariser"
+        print(make_summariser.__skill_description__)  # "Summarise long documents."
     """
 
     def decorator(fn: Any) -> Any:
