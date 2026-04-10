@@ -195,7 +195,7 @@ registry.register(make_summariser())
 | Phase               | Status     | What ships                                                                    |
 | ------------------- | ---------- | ----------------------------------------------------------------------------- |
 | **1 — Proto**       | ✅ Current | `Skill`, `SkillProtocol`, `SkillHooks`, always-on injection                   |
-| **2 — Routing**     | 🟡 Planned | `SkillRegistry`, `when_to_use` matching, `invoke_skill` tool, `RunSkillHooks` |
+| **2 — Routing**     | 🟡 Planned | `SkillRegistry`, LLM-based routing, `invoke_skill` tool, `RunSkillHooks`      |
 | **3 — File skills** | 🟡 Planned | SKILL.md loading, YAML frontmatter, argument substitution                     |
 | **4 — Advanced**    | 🟡 Planned | `context: fork`, tool-result triggers, post-turn skills                       |
 | **5 — Hardening**   | 🟡 Planned | Source trust levels, path validation, `allowed-tools` enforcement             |
