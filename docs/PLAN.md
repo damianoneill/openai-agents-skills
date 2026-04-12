@@ -163,8 +163,8 @@ agent = Agent(
 
 ### `@skill` decorator
 
-Lightweight factory annotation for tooling and discovery (Phase 2+). Does not call
-or register the factory.
+Lightweight factory annotation that attaches skill metadata to a factory function.
+Does not call or register the factory.
 
 ```python
 @skill(name="summariser", description="Summarise long documents.")
@@ -172,12 +172,25 @@ def make_summariser() -> Skill:
     return MySummariserSkill()
 ```
 
+The decorator exists to support future static-analysis tooling and package-level skill
+discovery (e.g. scanning a module for decorated factories without instantiating them).
+No Phase 2 feature consumes the decorator output at runtime — `SkillRegistry.register`
+accepts `Skill` instances, not factories. The decorator's concrete runtime role is
+deferred to Phase 3+ when file-based and package-based skill discovery is designed.
+
 ---
 
 ## Phase 2 — Registry & Routing
 
 **Goal:** Skills are selected dynamically per-turn based on trigger conditions.
 Introduce `SkillRegistry` — a routing layer that decides which skills fire and when.
+
+> **Token budget note.** A skill body can be hundreds or thousands of tokens. Injecting
+> all registered skills on every LLM call is prohibitively expensive once a library grows
+> beyond a handful of small skills. Routing is therefore load-bearing, not optional: only
+> the skill(s) selected for the current message should be injected. Skills intended to be
+> always-on (unconditional) should have minimal, concise bodies. Large procedural skills
+> must declare a non-empty `when_to_use` so the router can select them selectively.
 
 ### `SkillRegistry`
 
@@ -260,8 +273,11 @@ Available skills:
 {skill_manifest}
 ```
 
-**Result caching:** responses cached by `message` string. Same message across turns
-returns cached selection without an additional LLM call.
+**Result caching:** responses are cached by `message` string using an LRU cache with
+`maxsize=256`. Same message within the session returns cached selection without an
+additional LLM call. The cap prevents unbounded growth in long-running services where
+conversational agents tend to send varied messages (low hit rate, high churn). The
+`maxsize` is configurable via `LLMSkillRouter(client=..., model=..., cache_size=256)`.
 
 **Fallback on error:** any exception is caught, logged at WARNING, and returns `[]` —
 the run continues with unconditional skills only.
@@ -322,6 +338,14 @@ class SkillRegistry:
 Skills with an empty `when_to_use` string are never passed to the router — the router
 manifest only includes skills that have declared routing intent.
 
+**Known limitation — single-turn routing context.** `select_for_message` routes based
+on the last user message extracted from `input_items`. In a multi-turn conversation,
+intent may span several turns (e.g. "run the payments workflow" three turns ago,
+followed by follow-up questions). Routing by the latest message alone can fail to
+activate the right skills mid-conversation. This is an accepted v1 constraint;
+callers that need multi-turn routing can pass a synthesised summary string to
+`select_for_message` directly rather than relying on last-message extraction.
+
 ### Routing-aware `SkillHooks`
 
 `SkillHooks` is extended to accept a `SkillRegistry`. At `on_llm_start` it extracts
@@ -353,16 +377,25 @@ On the first LLM call of each run, inject a concise manifest listing all registe
 skills and their `when_to_use` descriptions into `input_items`, so the model is aware
 of available capabilities even when automatic routing does not select them.
 
-Guarded per `Runner.run()` invocation using `id(context)` as a proxy for run identity —
-each `Runner.run()` call creates a new `RunContextWrapper` instance with a unique object
-id. `SkillHooks` stores `_manifest_injected: set[int]` and injects only when
-`id(context)` is not already in the set, then adds it. The set is never cleared —
-entries accumulate across the lifetime of the `SkillHooks` instance, which is
-intentional: if the same hooks object is reused across multiple `Runner.run()` calls,
-each call gets exactly one manifest injection.
+Guarded per `Runner.run()` invocation using a `WeakSet[RunContextWrapper]`. Each
+`Runner.run()` call creates a new `RunContextWrapper` instance; `SkillHooks` injects the
+manifest only when the context object is not already in the set, then adds it. Using a
+`WeakSet` means entries are automatically removed when the context object is garbage
+collected at run end, preventing both stale-ID false-positives and unbounded set growth
+in long-lived service processes.
 
-Note: `RunContextWrapper` does not expose a `run_id` field in the current SDK. `id(context)`
-is safe here because the context object stays alive for the full duration of the run.
+```python
+import weakref
+
+class SkillHooks(AgentHooks):
+    def __init__(self, ...) -> None:
+        ...
+        self._manifest_injected: weakref.WeakSet[RunContextWrapper] = weakref.WeakSet()
+```
+
+Note: `RunContextWrapper` does not expose a `run_id` field in the current SDK. The
+object identity of the context itself is the run identity — each `Runner.run()` call
+constructs a fresh instance.
 
 ```
 ## Available Skills
@@ -457,12 +490,28 @@ result = await Runner.run(
 **Double-injection guard.** The SDK fires both `run_hooks.on_llm_start` and
 `agent.hooks.on_llm_start` via `asyncio.gather` for every LLM call. If a skill is
 registered in both a `RunSkillHooks` and a per-agent `SkillHooks`, it will inject twice.
-To prevent this, both hook classes use a module-level `dict[int, set[str]]` named
-`_INJECTED_THIS_CALL` keyed by `id(input_items)`. Before injecting a skill, its `name`
-is checked against the set for the current call; if present it is skipped; otherwise the
-name is added and injection proceeds. The entry is removed in a `finally` block after all
-skills have been processed, so stale IDs never accumulate. Because Python's async
-event loop is single-threaded, no additional locking is needed for this dictionary.
+To prevent this, both hook classes use a `ContextVar[set[str]]` named `_injected_this_call`
+to track which skill names have already been injected for the current call. Before
+injecting a skill, its `name` is checked against the set; if present it is skipped;
+otherwise the name is added and injection proceeds.
+
+Using `ContextVar` eliminates global mutable state — the variable is scoped to the
+current async task and naturally cleaned up when the task ends, so no `finally` cleanup
+is needed and concurrent tests cannot interfere with each other.
+
+```python
+from contextvars import ContextVar
+
+_injected_this_call: ContextVar[set[str]] = ContextVar("_injected_this_call", default=None)
+
+async def on_llm_start(self, context, agent, system_prompt, input_items) -> None:
+    seen = _injected_this_call.get()
+    if seen is None:
+        seen = set()
+        _injected_this_call.set(seen)
+    # skip any skill whose name is already in `seen`; add before injecting
+    ...
+```
 
 Tests must cover: same skill registered in both `RunSkillHooks` and `SkillHooks` injects
 only once; two _different_ skills registered separately each inject once.
@@ -513,16 +562,17 @@ Additional directories can be supplied via `SkillConfig.extra_dirs`.
 
 ### Frontmatter fields
 
-| Field            | Type               | Required | Notes                                           |
-| ---------------- | ------------------ | -------- | ----------------------------------------------- |
-| `name`           | `str`              | No       | Overrides the directory name as the skill label |
-| `description`    | `str`              | Yes      | Short summary; used in manifest and routing     |
-| `when_to_use`    | `str`              | No       | Prose trigger description with example phrases  |
-| `allowed-tools`  | `list[str]`        | No       | Informational in Phase 3; enforced in Phase 5   |
-| `argument-hint`  | `str`              | No       | Human-readable hint, e.g. `"[branch] [env]"`    |
-| `arguments`      | `list[str]`        | No       | Named args for `$arg_name` substitution in body |
-| `context`        | `inline` \| `fork` | No       | `fork` implemented in Phase 4; default `inline` |
-| `user-invocable` | `bool`             | No       | Default `true`; `false` hides from manifest     |
+| Field            | Type               | Required | Notes                                                        |
+| ---------------- | ------------------ | -------- | ------------------------------------------------------------ |
+| `name`           | `str`              | No       | Overrides the directory name as the skill label              |
+| `description`    | `str`              | Yes      | Short summary; used in manifest and routing                  |
+| `when_to_use`    | `str`              | No       | Prose trigger description with example phrases               |
+| `allowed-tools`  | `list[str]`        | No       | Tools this skill may invoke; surfaced in manifest Phase 3, enforced in `context: fork` Phase 4 |
+| `argument-hint`  | `str`              | No       | Human-readable hint, e.g. `"[target] [env]"`                 |
+| `arguments`      | `list[str]`        | No       | Named args for `$arg_name` substitution in body              |
+| `context`        | `inline` \| `fork` | No       | `fork` implemented in Phase 4; default `inline`              |
+| `user-invocable` | `bool`             | No       | Default `true`; `false` hides from manifest                  |
+| `deprecated`     | `bool`             | No       | Default `false`; `true` excludes from manifest and router    |
 
 ### `FileSkill`
 
@@ -597,6 +647,21 @@ async def load_all_skills(
 4. User-layer skills win over project-layer on name conflict
 5. Returns a `SkillRegistry` ready to pass to `SkillHooks`
 
+**File I/O must not block the event loop.** `Path.read_text()` is synchronous; calling
+it directly inside an `async` function blocks all other coroutines for the duration of
+the read. Wrap each read with `asyncio.to_thread()`:
+
+```python
+import asyncio
+
+async def _read_skill_file(path: Path) -> str:
+    return await asyncio.to_thread(path.read_text, encoding="utf-8")
+```
+
+All `SKILL.md` reads inside `load_skills_from_dir` use this wrapper. The
+`asyncio.gather` call that parallelises directory loading then genuinely runs I/O
+concurrently rather than sequentially blocking.
+
 ### Argument substitution
 
 ```python
@@ -618,6 +683,14 @@ Substitution order:
    the `variables` dict (if provided). Common uses: `${RUN_ID}`, `${USER}`,
    `${PROJECT}`. The dict is passed down from `SkillConfig.variables`.
 
+**List-valued arguments.** When a skill operates on multiple targets (e.g. a set of
+hosts, a list of files), the caller passes a space-separated or comma-separated string
+as `raw_args`. `substitute_args` expands `$1`, `$2`, … positionally, and `$arg_name`
+by name. For variable-length target lists, the convention is a single named arg
+(e.g. `targets`) whose value is the full multi-value string; the skill body is
+responsible for instructing the model how to interpret it (e.g. "for each target in
+`$targets`, run the following steps in parallel").
+
 `variables` replaces the previously proposed `${SESSION_ID}` built-in. There is no
 implicitly-resolved variable; callers supply whatever context they need:
 
@@ -626,26 +699,77 @@ config = SkillConfig(variables={"RUN_ID": str(uuid.uuid4()), "USER": "alice"})
 registry = await load_all_skills(cwd=Path.cwd(), config=config)
 ```
 
-`SkillConfig` gains the field:
-
-```python
-@dataclass
-class SkillConfig:
-    extra_dirs: list[Path] = field(default_factory=list)
-    user_dir: Path | None = None
-    project_dir: Path | None = None
-    variables: dict[str, str] = field(default_factory=dict)  # NEW
-```
-
 ### `SkillConfig`
 
 ```python
 @dataclass
 class SkillConfig:
     extra_dirs: list[Path] = field(default_factory=list)
-    user_dir: Path | None = None    # default: Path.home() / ".agent" / "skills"
-    project_dir: Path | None = None # default: cwd / ".agent" / "skills"
+    user_dir: Path | None = None       # default: Path.home() / ".agent" / "skills"
+    project_dir: Path | None = None    # default: cwd / ".agent" / "skills"
+    variables: dict[str, str] = field(default_factory=dict)
 ```
+
+### Path traversal validation
+
+File loading begins in Phase 3, so path traversal protection must also be in Phase 3 —
+not deferred to Phase 5. When resolving each `SKILL.md` path, assert that the resolved
+canonical path is still a descendant of the expected base directory:
+
+```python
+def assert_within_base(path: Path, base: Path) -> None:
+    if not path.resolve().is_relative_to(base.resolve()):
+        raise ValueError(f"Path {path} escapes base directory {base}")
+```
+
+Called immediately after building the candidate path, before any file read. Any `name`
+or `arguments` frontmatter field containing path separators (`/`, `\`) or `..`
+components is also rejected at parse time.
+
+### `allowed-tools` manifest surfacing
+
+When a `FileSkill` declares `allowed-tools`, that list is included in the skill's
+manifest entry so the model knows which tools the skill expects to use. This is
+informational in Phase 3 — the agent still has access to all its configured tools.
+Enforcement (restricting the tool set) is deferred to Phase 4 (`context: fork`),
+where the forked agent is constructed with only the declared tools.
+
+```
+## Available Skills
+- diagnose: Runs a full diagnostic workflow. Allowed tools: tool_a, tool_b.
+  When to use: diagnosing issues, checking status
+```
+
+### `deprecated` skills
+
+`FileSkill` instances parsed from frontmatter with `deprecated: true` are loaded but
+excluded from the router manifest and from `get_unconditional()`. They are retained in
+the registry under their name so explicit `registry.get(name)` calls still work.
+This supports skill libraries where older versions are superseded without deleting files.
+
+When a deprecated skill is invoked explicitly (via `registry.get(name)` or the
+`invoke_skill` tool), it executes normally and logs a deprecation warning:
+
+```
+WARNING: Skill 'old-workflow' is deprecated and may be removed in a future version.
+```
+
+Deprecated skills are not suppressed on explicit invocation — callers may need them
+for reference or rollback purposes. The warning surfaces the deprecation without
+blocking execution.
+
+### Category composition pattern
+
+A skill library covering a broad domain (e.g. operations, code review, data pipelines)
+should be decomposed into focused single-category skills rather than one large
+monolithic skill. Each category skill has a tight `when_to_use` so the router selects
+only the relevant category. A separate aggregator skill with `when_to_use` matching
+"full", "all", "everything" can inject multiple categories by calling `get_prompt_blocks`
+on each in its own implementation.
+
+This pattern keeps individual skill bodies small (good for token budget), improves
+routing precision (the router selects exactly the category asked for), and allows
+callers to combine categories by naming them in the same message.
 
 ### Typical usage
 
@@ -680,6 +804,8 @@ deduplication logic. `src/openai_agents_skills/substitution.py` — `substitute_
 - Argument substitution for named args, positional fallback, and caller-supplied `${VAR}` variables
 - `substitute_args` with `variables={}` leaves `${UNKNOWN}` patterns unchanged
 - `SkillConfig.variables` dict is threaded through to `substitute_args`
+- `deprecated: true` skill excluded from `get_unconditional()` and router manifest; still retrievable by name
+- `allowed-tools` list appears in manifest entry when declared; absent from manifest when not declared
 - `load_all_skills` returns a populated registry wired to `SkillHooks`
 
 ---
@@ -710,8 +836,20 @@ fork_agent = Agent(
     instructions=skill_prompt_body,
 )
 fork_result = await Runner.run(fork_agent, input=last_user_message)
-# inject fork_result.final_output back into parent input_items
+# inject fork_result.final_output back into parent input_items as a user-role message
+result_block = {
+    "role": "user",
+    "content": f"[skill:{skill.name} result]\n{fork_result.final_output}",
+}
+input_items.append(result_block)
 ```
+
+The fork result is injected as a plain `user`-role message, not as a
+`function_call_output`. The OpenAI Responses API and Chat Completions API both require
+`function_call_output` / `tool_result` items to be paired with a preceding
+`function_call` / `tool_use` item; an unpaired result item causes an API validation
+error. A user-role message with a structured prefix (`[skill:name result]`) is
+unambiguous to the model and requires no synthetic tool-use scaffolding.
 
 ### Tool-result triggers
 
@@ -856,12 +994,28 @@ project > extra).
 system message boundary. Substituted values are validated as plain text before
 insertion into the prompt body.
 
-### `allowed-tools` enforcement
+### `allowed-tools` audit
 
-The `allowed-tools` frontmatter field (informational in Phase 3) is enforced here.
-When a `FileSkill` with `allowed-tools` is applied via `context: fork`, the forked
-agent is constructed with only those tools available, regardless of what the parent
-agent has.
+`allowed-tools` enforcement moves to Phase 4 (`context: fork`). Phase 5 adds a
+static audit: warn if a skill declares an `allowed-tools` entry that does not match
+any tool registered on the agent. This surfaces configuration drift (e.g. a tool was
+renamed or removed) before the agent runs.
+
+The audit is triggered explicitly by the caller after constructing both the registry
+and the agent, since the registry is built independently of any agent:
+
+```python
+from openai_agents_skills import audit_allowed_tools
+
+registry = await load_all_skills(cwd=Path.cwd())
+agent = Agent(name="Assistant", tools=[tool_a, tool_b], hooks=SkillHooks(registry=registry))
+
+# Call once at startup to surface drift
+audit_allowed_tools(registry, agent_tools=[t.name for t in agent.tools])
+```
+
+`audit_allowed_tools` logs a WARNING for each skill whose `allowed-tools` list contains
+a name not present in `agent_tools`. It does not raise — the agent continues to run.
 
 ### Coverage & documentation targets
 
@@ -916,4 +1070,4 @@ tests/
 | **2 — Routing**             | 🟡 Planned  | `SkillRegistry`, `when_to_use` matching, manifest, `invoke_skill`, `RunSkillHooks` | `AgentHooks.on_start`, `RunHooks`      |
 | **3 — File skills**         | 🟡 Planned  | SKILL.md loading, frontmatter parsing, arg substitution, user + project dirs       | —                                      |
 | **4 — Advanced triggering** | 🟡 Planned  | `context: fork`, tool-result triggers, post-turn skills                            | `AgentHooks.on_tool_end`, `on_llm_end` |
-| **5 — Hardening**           | 🟡 Planned  | Source trust levels, path validation, `allowed-tools` enforcement, full docs       | —                                      |
+| **5 — Hardening**           | 🟡 Planned  | Source trust levels, path validation, `allowed-tools` audit, full docs             | —                                      |
