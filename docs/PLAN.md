@@ -184,11 +184,17 @@ accepts `Skill` instances, not factories. The decorator's concrete runtime role 
 deferred to Phase 3+ when file-based and package-based skill discovery is designed.
 
 The public docstring and README entry for `@skill` must state this explicitly — it is
-a **forward-looking marker**, not a registration mechanism. Callers who add `@skill`
-and expect the factory to auto-register will be confused. The docstring should read:
-"Attaches skill metadata to a factory function for future tooling discovery. Has no
-runtime effect in the current version — call the factory and pass the result to
-`SkillRegistry.register` to register a skill."
+a **forward-looking marker**, not a registration mechanism. Callers from Flask/FastAPI
+or `@function_tool` backgrounds will intuitively expect a decorator to register
+something. The docstring should read: "Attaches skill metadata to a factory function
+for future tooling discovery. Has no runtime effect in the current version — call the
+factory and pass the result to `SkillRegistry.register` to register a skill."
+
+**Rename consideration.** `@skill_factory` would be a clearer name — it marks a
+factory, not a skill. Since the package is pre-1.0 alpha, this rename is viable before
+the first stable release. The decision should be made before Phase 3 ships; at that
+point the decorator gains a concrete use and renaming post-release becomes a breaking
+change.
 
 ---
 
@@ -217,8 +223,8 @@ class SkillRegistry:
     @property
     def skill_names(self) -> list[str]: ...
 
-    def get_unconditional(self) -> list[Skill]:
-        """Skills whose is_enabled() returns True."""
+    def get_always_on(self) -> list[Skill]:
+        """Skills with no when_to_use (always-on) whose is_enabled() returns True."""
 
     async def select_for_message(self, message: str) -> list[Skill]:
         """Return skills selected by the router for this message."""
@@ -285,6 +291,16 @@ Available skills:
 {skill_manifest}
 ```
 
+**When to use `LLMSkillRouter`.** Every routing call is an additional LLM request that
+precedes the main agent call — roughly doubling per-turn latency for unique messages
+(cache hit rate is low in conversational agents since most messages are distinct). Use
+`LLMSkillRouter` only when the skill library is large enough that the token savings from
+selective injection outweigh the routing overhead. A rough threshold: if the registry
+has 3–5 concise skills whose combined size is a few hundred tokens, always-on injection
+via `NullSkillRouter` (or no router) is faster and simpler. `LLMSkillRouter` pays off
+when skills are large (hundreds of tokens each) or numerous (10+), where injecting all
+of them every turn would be more expensive than one routing call.
+
 **Result caching:** responses are cached by `message` string using an LRU cache with
 `maxsize=256`. Same message within the session returns cached selection without an
 additional LLM call. The cap prevents unbounded growth in long-running services where
@@ -334,7 +350,7 @@ class NullSkillRouter:
 #### `SkillRegistry` with router
 
 Router is optional. When omitted, `select_for_message` always returns `[]` and all
-active skills come from `get_unconditional()`.
+active skills come from `get_always_on()`.
 
 ```python
 class SkillRegistry:
@@ -370,10 +386,14 @@ class SkillHooks(AgentHooks):
         self,
         skills: list[SkillProtocol] | None = None,
         registry: SkillRegistry | None = None,
-    ) -> None: ...
+    ) -> None:
+        # When both are provided, `skills` are treated as additional unconditional
+        # skills merged with registry.get_always_on(). Registry routing applies on top.
+        # Duplicates (by name) are deduplicated — registry skill wins.
+        ...
 
     async def on_llm_start(self, context, agent, system_prompt, input_items) -> None:
-        base = self._registry.get_unconditional() if self._registry else self._skills
+        base = self._registry.get_always_on() if self._registry else self._skills
         last_user_msg = _extract_last_user_message(input_items)
         routed = await self._registry.select_for_message(last_user_msg) if self._registry else []
         all_blocks: list = []
@@ -385,11 +405,16 @@ class SkillHooks(AgentHooks):
         input_items[0:0] = all_blocks  # single prepend — preserves registration order
 ```
 
-**`is_enabled()` is the final gate.** `get_unconditional()` already filters disabled
+**`get_always_on()` naming.** The name "unconditional" was misleading — it implied the
+method bypasses `is_enabled()`, when in fact it applies both the routing filter (no
+`when_to_use`) *and* the `is_enabled()` gate. `get_always_on()` reads as "skills that
+should always run" which captures both filters. The docstring makes both explicit.
+
+**`is_enabled()` is the final gate.** `get_always_on()` already filters disabled
 skills, but `select_for_message` returns skills by name from the registry without
 re-checking `is_enabled()` — a router could return a skill that became disabled between
 the router call and injection. The `on_llm_start` loop applies `is_enabled()` to every
-candidate regardless of how it arrived (unconditional, routed, or pending). Duck-typed
+candidate regardless of how it arrived (always-on, routed, or pending). Duck-typed
 objects that do not implement `is_enabled` are always injected (consistent with Phase 1
 behaviour).
 
@@ -467,7 +492,7 @@ prevents unbounded loops without crashing the agent run. Callers that need highe
 
 ### `is_enabled` gate
 
-`Skill.is_enabled()` (already present in Phase 1) is used by `get_unconditional()`
+`Skill.is_enabled()` (already present in Phase 1) is used by `get_always_on()`
 to exclude skills that are disabled at call time.
 
 ### Error resilience in `get_prompt_blocks`
@@ -505,9 +530,13 @@ SkillHooks(
 )
 ```
 
-The default callback logs at WARNING and continues. Passing
-`on_skill_error=lambda skill, exc: (_ for _ in ()).throw(exc)` restores the
-raise-on-error behaviour for tests.
+The default callback logs at WARNING and continues. To restore raise-on-error
+behaviour for tests, define a named function:
+
+```python
+def reraise(skill, exc): raise exc
+SkillHooks(skills=[...], on_skill_error=reraise)
+```
 
 Tests must cover: skill raising `ValueError` does not prevent other skills from
 injecting; the `on_skill_error` callback is called with the skill and exception;
@@ -565,7 +594,7 @@ only once; two _different_ skills registered separately each inject once.
 ### Tests for Phase 2
 
 - Registry: register / get / unregister, duplicate name overwrite, `skill_names` sorted
-- `get_unconditional` excludes skills where `is_enabled()` returns `False`
+- `get_always_on` excludes skills where `is_enabled()` returns `False`
 - `NullSkillRouter.select` always returns `[]`
 - `LLMSkillRouter.select` calls client with correct prompt and parses `{"selected": [...]}` response
 - `LLMSkillRouter.select` returns `[]` and logs warning on client error (no crash)
@@ -767,6 +796,29 @@ Called immediately after building the candidate path, before any file read. Any 
 or `arguments` frontmatter field containing path separators (`/`, `\`) or `..`
 components is also rejected at parse time.
 
+### Argument injection safety
+
+`substitute_args` is introduced in Phase 3, so its input validation belongs here — not
+deferred to Phase 5. A value is rejected (raises `ValueError` at substitution time)
+if it contains any of:
+
+- Null bytes (`\x00`) — can truncate strings in C-backed parsers
+- YAML frontmatter boundary sequences (`\n---\n`, `\n...\n`) — could break a parser
+  that re-reads the assembled body as frontmatter
+- Unicode bidirectional override characters (`\u202a`–`\u202e`, `\u2066`–`\u2069`) —
+  can visually obscure injected content
+- Sequences that look like role/system headers (`\nHuman:`, `\nAssistant:`,
+  `\n<|im_start|>`) — could confuse tokeniser-level message parsing in some models
+
+These four categories are concrete and testable. All other content is accepted as-is —
+skills can contain Markdown, code blocks, and multi-line text without restriction.
+Validation runs on each substituted value independently, not on the assembled body.
+
+When a `${KEY}` pattern is present in the template but the key is absent from
+`variables`, the pattern is left unchanged and a DEBUG-level log is emitted:
+`"Template contains ${KEY} but key not in variables; left unreplaced."` This surfaces
+misconfiguration during development without failing the substitution.
+
 ### `allowed-tools` manifest surfacing
 
 When a `FileSkill` declares `allowed-tools`, that list is included in the skill's
@@ -784,7 +836,7 @@ where the forked agent is constructed with only the declared tools.
 ### `deprecated` skills
 
 `FileSkill` instances parsed from frontmatter with `deprecated: true` are loaded but
-excluded from the router manifest and from `get_unconditional()`. They are retained in
+excluded from the router manifest and from `get_always_on()`. They are retained in
 the registry under their name so explicit `registry.get(name)` calls still work.
 This supports skill libraries where older versions are superseded without deleting files.
 
@@ -846,9 +898,9 @@ deduplication logic. `src/openai_agents_skills/substitution.py` — `substitute_
 - `realpath` deduplication prevents loading the same file twice via symlinks
 - User-layer skill wins over project-layer skill with the same name
 - Argument substitution for named args, positional fallback, and caller-supplied `${VAR}` variables
-- `substitute_args` with `variables={}` leaves `${UNKNOWN}` patterns unchanged
+- `substitute_args` with `variables={}` leaves `${UNKNOWN}` patterns unchanged and emits a DEBUG log
 - `SkillConfig.variables` dict is threaded through to `substitute_args`
-- `deprecated: true` skill excluded from `get_unconditional()` and router manifest; still retrievable by name
+- `deprecated: true` skill excluded from `get_always_on()` and router manifest; still retrievable by name
 - `allowed-tools` list appears in manifest entry when declared; absent from manifest when not declared
 - `load_all_skills` returns a populated registry wired to `SkillHooks`
 
@@ -895,6 +947,24 @@ The fork result is injected as a plain `user`-role message, not as a
 error. A user-role message with a structured prefix (`[skill:name result]`) is
 unambiguous to the model and requires no synthetic tool-use scaffolding.
 
+**Open design question — conversation history pollution.** Injecting a `user`-role
+message via `on_llm_start` means it may be accumulated into conversation history by
+the SDK across turns. On turn N+1 the model would see `[skill:name result]` as if
+the user wrote it, which could interfere with multi-turn coherence. Alternatives
+under consideration for the Phase 4 implementation:
+
+- Synthetic `function_call` + `function_call_output` pair — API-valid but complex;
+  requires generating a fake tool-call ID and ensuring the parent agent has a matching
+  tool registered.
+- `system`-role injection — not universally supported; some providers reject system
+  messages mid-conversation.
+- Post-turn injection via `on_llm_end` instead of `on_llm_start` — avoids polluting
+  the next input, but requires a different hook.
+
+This injection format must be resolved with a concrete decision before Phase 4
+implementation begins. The placeholder above (user-role) is correct for the initial
+prototype but should be treated as tentative.
+
 ### Tool-result triggers
 
 Skills declare which tools should trigger them after completion. After a matching tool
@@ -934,39 +1004,41 @@ which agent handles it. The Phase 4 test suite must include a case where the tri
 agent and the next-LLM-call agent are different, verifying this cross-agent drain
 behaviour explicitly.
 
-**Concurrency safety.** `_pending` is mutated from both `on_tool_end` and
-`on_llm_start`. In Python's asyncio single-threaded event loop these never run
-truly in parallel, but if a `SkillHooks` instance is shared across a
-`RunSkillHooks`-driven multi-agent run (multiple agents firing `on_tool_end`
-concurrently via `asyncio.gather`), appends can interleave unpredictably. Guard
-`_pending` with `asyncio.Lock`:
+**`_pending` must be run-scoped, not instance-scoped.** If the same `SkillHooks`
+instance is passed to two concurrent `Runner.run()` calls, instance-level `_pending`
+state from run A can drain into run B's next `on_llm_start`. An `asyncio.Lock` does
+not help here — it guards against concurrent mutation within a run, not against
+cross-run contamination.
+
+The fix is the same pattern used for the double-injection guard: use a
+`ContextVar[list[Skill]]` so pending state is scoped to the current async task (i.e.
+the current `Runner.run()` call), not the hook instance. This also eliminates the need
+for the lock, since `ContextVar` is task-local and not shared between concurrent runs.
 
 ```python
-def __init__(self, ...) -> None:
-    ...
-    self._pending: list[Skill] = []
-    self._pending_lock = asyncio.Lock()
+from contextvars import ContextVar
+
+_pending_skills: ContextVar[list[Skill]] = ContextVar("_pending_skills", default=None)
 
 async def on_tool_end(self, context, agent, tool, result) -> None:
-    async with self._pending_lock:
-        for skill in self._registry.get_triggered_by_tool(tool.name):
-            self._pending.append(skill)
+    pending = _pending_skills.get()
+    if pending is None:
+        pending = []
+        _pending_skills.set(pending)
+    for skill in self._registry.get_triggered_by_tool(tool.name):
+        pending.append(skill)
 
 async def on_llm_start(self, context, agent, system_prompt, input_items) -> None:
-    async with self._pending_lock:
-        pending_snapshot = list(self._pending)
-        self._pending.clear()
-    # inject snapshot outside the lock so get_prompt_blocks can await freely
-    all_blocks: list = []
-    for skill in pending_snapshot:
-        blocks = await skill.get_prompt_blocks()
-        all_blocks.extend(blocks)
-    input_items[0:0] = all_blocks
+    pending = _pending_skills.get()
+    if pending:
+        snapshot = list(pending)
+        pending.clear()
+        all_blocks: list = []
+        for skill in snapshot:
+            blocks = await skill.get_prompt_blocks()
+            all_blocks.extend(blocks)
+        input_items[0:0] = all_blocks
 ```
-
-The snapshot-outside-lock pattern is critical: holding the lock while calling
-`await skill.get_prompt_blocks()` would deadlock if that skill itself triggers
-another `on_tool_end`.
 
 ### Post-turn skills via `on_llm_end`
 
@@ -1053,23 +1125,6 @@ def assert_within_base(path: Path, base: Path) -> None:
 `realpath()` for canonical path resolution. Never use inode numbers — unreliable on
 NFS, ExFAT, overlayfs, and container filesystems. First occurrence wins (user >
 project > extra).
-
-### Argument injection safety
-
-`substitute_args` validates substituted values before insertion. A value is rejected
-(raises `ValueError` at substitution time) if it contains any of:
-
-- Null bytes (`\x00`) — can truncate strings in C-backed parsers
-- YAML frontmatter boundary sequences (`\n---\n`, `\n...\n`) — could break a parser
-  that re-reads the assembled body as frontmatter
-- Unicode bidirectional override characters (`\u202a`–`\u202e`, `\u2066`–`\u2069`) —
-  can visually obscure injected content
-- Sequences that look like role/system headers (`\nHuman:`, `\nAssistant:`,
-  `\n<|im_start|>`) — could confuse tokeniser-level message parsing in some models
-
-These four categories are concrete and testable. All other content is accepted as-is —
-skills can contain Markdown, code blocks, and multi-line text without restriction.
-Validation runs on each substituted value independently, not on the assembled body.
 
 ### `allowed-tools` audit
 
