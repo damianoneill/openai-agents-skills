@@ -113,6 +113,11 @@ async def on_llm_start(self, context, agent, system_prompt, input_items):
 No monkey-patching. No subclassing of internal SDK types. No modifications to the
 `Agent` object. A standard `AgentHooks` subclass writing to a mutable list.
 
+**Streaming compatibility.** The SDK's streaming path (`Runner.run_streamed`) passes
+through the same `on_llm_start` hook before each model call with the same mutable
+`input_items` list. Skill injection works identically in streaming and non-streaming
+runs — no special-casing is needed.
+
 ---
 
 ## Phase 1 — Proto ✅
@@ -177,6 +182,13 @@ discovery (e.g. scanning a module for decorated factories without instantiating 
 No Phase 2 feature consumes the decorator output at runtime — `SkillRegistry.register`
 accepts `Skill` instances, not factories. The decorator's concrete runtime role is
 deferred to Phase 3+ when file-based and package-based skill discovery is designed.
+
+The public docstring and README entry for `@skill` must state this explicitly — it is
+a **forward-looking marker**, not a registration mechanism. Callers who add `@skill`
+and expect the factory to auto-register will be confused. The docstring should read:
+"Attaches skill metadata to a factory function for future tooling discovery. Has no
+runtime effect in the current version — call the factory and pass the result to
+`SkillRegistry.register` to register a skill."
 
 ---
 
@@ -366,10 +378,20 @@ class SkillHooks(AgentHooks):
         routed = await self._registry.select_for_message(last_user_msg) if self._registry else []
         all_blocks: list = []
         for skill in _deduplicate([*base, *routed]):
+            if hasattr(skill, "is_enabled") and not skill.is_enabled():
+                continue  # final gate — applies regardless of how the skill arrived
             blocks = await skill.get_prompt_blocks()
             all_blocks.extend(blocks)
         input_items[0:0] = all_blocks  # single prepend — preserves registration order
 ```
+
+**`is_enabled()` is the final gate.** `get_unconditional()` already filters disabled
+skills, but `select_for_message` returns skills by name from the registry without
+re-checking `is_enabled()` — a router could return a skill that became disabled between
+the router call and injection. The `on_llm_start` loop applies `is_enabled()` to every
+candidate regardless of how it arrived (unconditional, routed, or pending). Duck-typed
+objects that do not implement `is_enabled` are always injected (consistent with Phase 1
+behaviour).
 
 ### System prompt manifest
 
@@ -405,6 +427,17 @@ constructs a fresh instance.
   Example: "clean this up", "review the code"
 ```
 
+**Manifest token budget.** A large registry can make the manifest itself expensive —
+30 skills with multi-sentence `when_to_use` descriptions can add several hundred tokens
+on the first call of every run. Two mitigations:
+
+1. Manifest entries should be kept to one or two sentences. The `when_to_use` field is
+   for routing signal, not a full description; verbose prose belongs in the skill body.
+2. `SkillHooks` accepts an optional `max_manifest_skills: int` parameter. When set,
+   only the first N skills (by registration order) are included in the manifest. Skills
+   beyond the cap are still available via routing and explicit `invoke_skill` calls —
+   they just do not appear in the first-call manifest. Default: unlimited.
+
 ### `invoke_skill` function tool
 
 An optional `function_tool` the model can call explicitly for model-driven skill
@@ -423,6 +456,14 @@ agent = Agent(
 `make_invoke_skill_tool(registry)` returns a `@function_tool` that looks up
 `skill_name` in the registry, calls `skill.get_prompt_blocks(args)`, and returns
 the concatenated text as a tool result the model can act on.
+
+**Runaway invocation guard.** The model can call `invoke_skill` repeatedly across turns.
+`make_invoke_skill_tool` accepts an optional `max_calls_per_run: int` parameter
+(default: 10). The tool tracks invocation count per run context using a `WeakKeyDictionary`
+keyed on the `RunContextWrapper`. When the limit is exceeded the tool returns an error
+string rather than skill content: `"invoke_skill limit reached for this run"`. This
+prevents unbounded loops without crashing the agent run. Callers that need higher limits
+(or no limit) can pass `max_calls_per_run=0` to disable the guard.
 
 ### `is_enabled` gate
 
@@ -747,16 +788,19 @@ excluded from the router manifest and from `get_unconditional()`. They are retai
 the registry under their name so explicit `registry.get(name)` calls still work.
 This supports skill libraries where older versions are superseded without deleting files.
 
-When a deprecated skill is invoked explicitly (via `registry.get(name)` or the
-`invoke_skill` tool), it executes normally and logs a deprecation warning:
+When a deprecated skill is registered, `SkillRegistry.register` logs a deprecation
+warning immediately at registration time:
 
 ```
-WARNING: Skill 'old-workflow' is deprecated and may be removed in a future version.
+WARNING: Skill 'old-workflow' is marked deprecated. It will not be routed automatically
+but remains available via registry.get('old-workflow') and invoke_skill.
 ```
 
-Deprecated skills are not suppressed on explicit invocation — callers may need them
-for reference or rollback purposes. The warning surfaces the deprecation without
-blocking execution.
+This surfaces the deprecation at startup (when `load_all_skills` populates the registry)
+rather than only when the skill fires. When a deprecated skill is subsequently invoked
+explicitly (via `registry.get(name)` or the `invoke_skill` tool), it executes normally
+and logs the warning again at invocation time. Deprecated skills are not suppressed on
+explicit invocation — callers may need them for reference or rollback purposes.
 
 ### Category composition pattern
 
@@ -880,6 +924,16 @@ async def on_llm_start(self, context, agent, system_prompt, input_items) -> None
 Injecting at the _next_ `on_llm_start` rather than the same turn avoids confusing
 the model with mid-turn context changes.
 
+**Cross-agent `_pending` drain in `RunSkillHooks`.** `RunSkillHooks` fires `on_tool_end`
+and `on_llm_start` for every agent in a run. This means a tool completing on Agent A
+will queue a skill in `_pending`, and that skill will drain into the next `on_llm_start`
+call — which may be for Agent B in a handoff scenario. This is intentional: pending
+skills are run-scoped, not agent-scoped. A skill triggered by a tool result on any agent
+is relevant to the continuing run and should inject into the next LLM call regardless of
+which agent handles it. The Phase 4 test suite must include a case where the triggering
+agent and the next-LLM-call agent are different, verifying this cross-agent drain
+behaviour explicitly.
+
 **Concurrency safety.** `_pending` is mutated from both `on_tool_end` and
 `on_llm_start`. In Python's asyncio single-threaded event loop these never run
 truly in parallel, but if a `SkillHooks` instance is shared across a
@@ -950,6 +1004,7 @@ class SkillRegistry:
 - `get_triggered_by_tool` returns empty list when no skills match
 - `get_post_turn` returns only skills with the flag set
 - `_pending_lock` prevents lost appends when two `on_tool_end` callbacks fire concurrently (use `asyncio.gather` over two mock tool completions in the test)
+- Cross-agent drain: tool fires on Agent A, next `on_llm_start` is for Agent B — skill injects into Agent B's `input_items` (run-scoped intent)
 
 ---
 
@@ -967,8 +1022,19 @@ class SkillSource(str, Enum):
     EXTRA = "extra"       # caller-supplied extra_dirs — caller-trusted
 ```
 
-Trust level is stored on `FileSkill` and surfaced in log output. Reserved for future
-enforcement (e.g. restricting certain features to higher-trust sources).
+Trust level is stored on `FileSkill` and surfaced in log output. Phase 5 defines the
+following concrete enforcement rules:
+
+- `context: fork` is permitted for all trust levels (enforcement is already handled
+  by the forked agent's isolated tool list in Phase 4).
+- `allowed-tools` declarations are honoured for all trust levels.
+- Future: `EXTRA` skills may be restricted from using `context: fork` in a hardened
+  deployment mode (opt-in via `SkillConfig(restrict_extra_fork=True)`). This is
+  **not** implemented in Phase 5 — it is the one "reserved for future" item that
+  remains here, with a concrete opt-in flag as its eventual surface.
+
+If enforcement requirements beyond these do not materialise before Phase 5 ships, the
+`restrict_extra_fork` flag should be dropped and this section trimmed to just logging.
 
 ### Path traversal validation
 
@@ -990,9 +1056,20 @@ project > extra).
 
 ### Argument injection safety
 
-`substitute_args` must not allow a skill body to inject content that looks like a
-system message boundary. Substituted values are validated as plain text before
-insertion into the prompt body.
+`substitute_args` validates substituted values before insertion. A value is rejected
+(raises `ValueError` at substitution time) if it contains any of:
+
+- Null bytes (`\x00`) — can truncate strings in C-backed parsers
+- YAML frontmatter boundary sequences (`\n---\n`, `\n...\n`) — could break a parser
+  that re-reads the assembled body as frontmatter
+- Unicode bidirectional override characters (`\u202a`–`\u202e`, `\u2066`–`\u2069`) —
+  can visually obscure injected content
+- Sequences that look like role/system headers (`\nHuman:`, `\nAssistant:`,
+  `\n<|im_start|>`) — could confuse tokeniser-level message parsing in some models
+
+These four categories are concrete and testable. All other content is accepted as-is —
+skills can contain Markdown, code blocks, and multi-line text without restriction.
+Validation runs on each substituted value independently, not on the assembled body.
 
 ### `allowed-tools` audit
 
