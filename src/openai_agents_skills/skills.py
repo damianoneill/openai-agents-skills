@@ -113,7 +113,7 @@ class Skill:
         raise NotImplementedError(f"{type(self).__name__} must implement get_prompt_blocks()")
 
 
-def skill(
+def skill_factory(
     name: str,
     description: str = "",
 ) -> Any:
@@ -122,7 +122,10 @@ def skill(
     The decorated function must return a :class:`Skill` instance. This
     decorator is a lightweight annotation only — it does not call the function
     or register the skill automatically. Its primary use is skill discovery
-    tooling (Phase 2+).
+    tooling (Phase 3+).
+
+    Has no runtime effect in the current version. To register a skill, call
+    the factory and pass the result to ``SkillRegistry.register``.
 
     Args:
         name: The skill name. Should match the returned :attr:`Skill.name`.
@@ -134,7 +137,7 @@ def skill(
 
     Example::
 
-        @skill(name="summariser", description="Summarise long documents.")
+        @skill_factory(name="summariser", description="Summarise long documents.")
         def make_summariser() -> Skill:
             return MySummariserSkill()
 

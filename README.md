@@ -169,14 +169,15 @@ Duck-typed skills have no `is_enabled()` method and are always injected.
 
 ---
 
-## `@skill` Decorator
+## `@skill_factory` Decorator
 
-Tag factory functions with skill metadata for tooling and discovery (used by Phase 2+):
+Tag factory functions with skill metadata for tooling and discovery (used by Phase 3+).
+This is a forward-looking marker — it has no runtime effect in the current version.
 
 ```python
-from openai_agents_skills import skill, Skill
+from openai_agents_skills import skill_factory, Skill
 
-@skill(name="summariser", description="Summarise long documents into bullet points.")
+@skill_factory(name="summariser", description="Summarise long documents into bullet points.")
 def make_summariser() -> Skill:
     return MySummariserSkill()
 

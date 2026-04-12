@@ -31,12 +31,12 @@ Requirements::
 
 from openai_agents_skills._version import __version__
 from openai_agents_skills.hooks import SkillHooks
-from openai_agents_skills.skills import Skill, SkillProtocol, skill
+from openai_agents_skills.skills import Skill, SkillProtocol, skill_factory
 
 __all__ = [
     "__version__",
     "Skill",
     "SkillHooks",
     "SkillProtocol",
-    "skill",
+    "skill_factory",
 ]

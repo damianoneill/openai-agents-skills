@@ -1,4 +1,4 @@
-"""Tests for Skill base class, SkillProtocol, and @skill decorator."""
+"""Tests for Skill base class, SkillProtocol, and @skill_factory decorator."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from openai_agents_skills import Skill, SkillProtocol, skill
+from openai_agents_skills import Skill, SkillProtocol, skill_factory
 
 # ---------------------------------------------------------------------------
 # Skill base class
@@ -198,27 +198,27 @@ class TestSkillProtocol:
 
 
 # ---------------------------------------------------------------------------
-# @skill decorator
+# @skill_factory decorator
 # ---------------------------------------------------------------------------
 
 
 class TestSkillDecorator:
     def test_decorator_attaches_skill_name(self) -> None:
-        @skill(name="my_skill")
+        @skill_factory(name="my_skill")
         def factory() -> Skill:
             return Skill()
 
         assert factory.__skill_name__ == "my_skill"
 
     def test_decorator_attaches_description(self) -> None:
-        @skill(name="sk", description="A useful skill.")
+        @skill_factory(name="sk", description="A useful skill.")
         def factory() -> Skill:
             return Skill()
 
         assert factory.__skill_description__ == "A useful skill."
 
     def test_decorator_default_description_is_empty_string(self) -> None:
-        @skill(name="sk")
+        @skill_factory(name="sk")
         def factory() -> Skill:
             return Skill()
 
@@ -232,7 +232,7 @@ class TestSkillDecorator:
             async def get_prompt_blocks(self, args: str = "") -> list[Any]:
                 return []
 
-        @skill(name="concrete", description="Concrete.")
+        @skill_factory(name="concrete", description="Concrete.")
         def factory() -> Skill:
             return ConcreteSkill()
 
@@ -242,7 +242,7 @@ class TestSkillDecorator:
     def test_decorator_does_not_call_the_factory(self) -> None:
         call_count = 0
 
-        @skill(name="lazy")
+        @skill_factory(name="lazy")
         def factory() -> Skill:
             nonlocal call_count
             call_count += 1
@@ -254,5 +254,5 @@ class TestSkillDecorator:
         def factory() -> Skill:
             return Skill()
 
-        decorated = skill(name="sk")(factory)
+        decorated = skill_factory(name="sk")(factory)
         assert decorated is factory

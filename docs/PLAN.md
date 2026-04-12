@@ -128,7 +128,7 @@ runs — no special-casing is needed.
 ### Public API
 
 ```python
-from openai_agents_skills import Skill, SkillProtocol, SkillHooks, skill
+from openai_agents_skills import Skill, SkillProtocol, SkillHooks, skill_factory
 ```
 
 ### `Skill` — base class
@@ -166,13 +166,13 @@ agent = Agent(
 - `Skill` subclasses with `is_enabled() == False` are silently skipped
 - Duck-typed objects satisfying `SkillProtocol` are always injected
 
-### `@skill` decorator
+### `@skill_factory` decorator
 
 Lightweight factory annotation that attaches skill metadata to a factory function.
 Does not call or register the factory.
 
 ```python
-@skill(name="summariser", description="Summarise long documents.")
+@skill_factory(name="summariser", description="Summarise long documents.")
 def make_summariser() -> Skill:
     return MySummariserSkill()
 ```
@@ -183,18 +183,12 @@ No Phase 2 feature consumes the decorator output at runtime — `SkillRegistry.r
 accepts `Skill` instances, not factories. The decorator's concrete runtime role is
 deferred to Phase 3+ when file-based and package-based skill discovery is designed.
 
-The public docstring and README entry for `@skill` must state this explicitly — it is
-a **forward-looking marker**, not a registration mechanism. Callers from Flask/FastAPI
-or `@function_tool` backgrounds will intuitively expect a decorator to register
-something. The docstring should read: "Attaches skill metadata to a factory function
-for future tooling discovery. Has no runtime effect in the current version — call the
-factory and pass the result to `SkillRegistry.register` to register a skill."
-
-**Rename consideration.** `@skill_factory` would be a clearer name — it marks a
-factory, not a skill. Since the package is pre-1.0 alpha, this rename is viable before
-the first stable release. The decision should be made before Phase 3 ships; at that
-point the decorator gains a concrete use and renaming post-release becomes a breaking
-change.
+The public docstring must be explicit — it is a **forward-looking marker**, not a
+registration mechanism. Callers from Flask/FastAPI or `@function_tool` backgrounds
+will intuitively expect a decorator to register something. The docstring should read:
+"Attaches skill metadata to a factory function for future tooling discovery. Has no
+runtime effect in the current version — call the factory and pass the result to
+`SkillRegistry.register` to register a skill."
 
 ---
 
@@ -1165,7 +1159,7 @@ src/openai_agents_skills/
     __init__.py          # Public API — grows with each phase
     _version.py
     py.typed
-    skills.py            # Skill, SkillProtocol, @skill decorator           ✅ Phase 1
+    skills.py            # Skill, SkillProtocol, @skill_factory decorator    ✅ Phase 1
     hooks.py             # SkillHooks, RunSkillHooks — injection engine      ✅ Phase 1 / Phase 2
     registry.py          # SkillRegistry — routing, tool triggers            Phase 2 / Phase 4
     router.py            # SkillRouter protocol, LLMSkillRouter, NullSkillRouter  Phase 2
@@ -1178,7 +1172,7 @@ src/openai_agents_skills/
 tests/
     __init__.py
     test_version.py
-    test_skills.py       # Skill, SkillProtocol, @skill                      ✅ Phase 1
+    test_skills.py       # Skill, SkillProtocol, @skill_factory               ✅ Phase 1
     test_hooks.py        # SkillHooks injection                               ✅ Phase 1
     test_registry.py     # SkillRegistry routing, tool triggers               Phase 2 / Phase 4
     test_router.py       # LLMSkillRouter, NullSkillRouter, SkillRouter protocol  Phase 2
@@ -1198,7 +1192,7 @@ tests/
 
 | Phase                       | Status      | What ships                                                                         | Key SDK surface                        |
 | --------------------------- | ----------- | ---------------------------------------------------------------------------------- | -------------------------------------- |
-| **1 — Proto**               | ✅ Complete | `Skill`, `SkillProtocol`, `SkillHooks`, `@skill`, always-on injection              | `AgentHooks.on_llm_start`              |
+| **1 — Proto**               | ✅ Complete | `Skill`, `SkillProtocol`, `SkillHooks`, `@skill_factory`, always-on injection      | `AgentHooks.on_llm_start`              |
 | **2 — Routing**             | 🟡 Planned  | `SkillRegistry`, `when_to_use` matching, manifest, `invoke_skill`, `RunSkillHooks` | `AgentHooks.on_start`, `RunHooks`      |
 | **3 — File skills**         | 🟡 Planned  | SKILL.md loading, frontmatter parsing, arg substitution, user + project dirs       | —                                      |
 | **4 — Advanced triggering** | 🟡 Planned  | `context: fork`, tool-result triggers, post-turn skills                            | `AgentHooks.on_tool_end`, `on_llm_end` |
