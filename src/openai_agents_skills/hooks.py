@@ -112,20 +112,30 @@ def _deduplicate(skills: list[Skill]) -> list[Skill]:
 def _build_manifest(skills: list[Skill], max_skills: int | None = None) -> str:
     """Build a text manifest of available skills for the first-call system prompt.
 
+    Skills whose ``user_invocable`` attribute is ``False`` are excluded from the
+    manifest so the model never sees or routes to them directly.  When a skill
+    exposes a non-empty ``allowed_tools`` list, those tool names are appended to
+    the description line so the model knows which tools the skill may invoke.
+
     Args:
         skills: All registered skills to describe.
         max_skills: Optional cap.  When set, only the first *max_skills* entries
-            are included.
+            are included (after filtering non-user-invocable skills).
 
     Returns:
         A markdown-formatted manifest block, or ``""`` if there are no skills.
     """
-    entries = skills[:max_skills] if max_skills is not None else list(skills)
+    invocable = [s for s in skills if getattr(s, "user_invocable", True)]
+    entries = invocable[:max_skills] if max_skills is not None else list(invocable)
     if not entries:
         return ""
     lines = ["## Available Skills"]
     for skill in entries:
-        line = f"- {skill.name}: {skill.description}"
+        allowed_tools: list[str] = getattr(skill, "allowed_tools", [])
+        description = skill.description
+        if allowed_tools:
+            description += f". Allowed tools: {', '.join(allowed_tools)}"
+        line = f"- {skill.name}: {description}"
         if skill.when_to_use:
             line += f"\n  When to use: {skill.when_to_use}"
         lines.append(line)

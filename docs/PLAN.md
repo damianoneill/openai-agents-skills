@@ -1,6 +1,6 @@
 # openai-agents-skills: Implementation Plan
 
-> **Status:** Phase 2 complete ✅ — Phase 3 next
+> **Status:** Phase 3 complete ✅ — Phase 4 next
 
 ---
 
@@ -735,7 +735,7 @@ clears the guard; skill does not re-inject when `on_llm_end` is never called.
 
 ---
 
-## Phase 3 — File-Based Skills
+## Phase 3 — File-Based Skills ✅
 
 **Goal:** Load skills from `.agent/skills/<name>/SKILL.md` files on disk. Teams can
 distribute skills as files alongside their projects without writing Python.
@@ -766,7 +766,6 @@ Additional directories can be supplied via `SkillConfig.extra_dirs`.
 | `arguments`      | `list[str]` | No       | Named args for `$arg_name` substitution in body                                                |
 | `context`        | `inline`    | No       | Default `inline`; `context: fork` is planned for Phase 6                                       |
 | `user-invocable` | `bool`      | No       | Default `true`; `false` hides from manifest                                                    |
-| `deprecated`     | `bool`      | No       | Default `false`; `true` excludes from manifest and router                                      |
 
 ### `FileSkill`
 
@@ -957,27 +956,6 @@ where the forked agent is constructed with only the declared tools.
   When to use: diagnosing issues, checking status
 ```
 
-### `deprecated` skills
-
-`FileSkill` instances parsed from frontmatter with `deprecated: true` are loaded but
-excluded from the router manifest and from `get_always_on()`. They are retained in
-the registry under their name so explicit `registry.get(name)` calls still work.
-This supports skill libraries where older versions are superseded without deleting files.
-
-When a deprecated skill is registered, `SkillRegistry.register` logs a deprecation
-warning immediately at registration time:
-
-```
-WARNING: Skill 'old-workflow' is marked deprecated. It will not be routed automatically
-but remains available via registry.get('old-workflow') and invoke_skill.
-```
-
-This surfaces the deprecation at startup (when `load_all_skills` populates the registry)
-rather than only when the skill fires. When a deprecated skill is subsequently invoked
-explicitly (via `registry.get(name)` or the `invoke_skill` tool), it executes normally
-and logs the warning again at invocation time. Deprecated skills are not suppressed on
-explicit invocation — callers may need them for reference or rollback purposes.
-
 ### Category composition pattern
 
 A skill library covering a broad domain (e.g. operations, code review, data pipelines)
@@ -1024,7 +1002,6 @@ deduplication logic. `src/openai_agents_skills/substitution.py` — `substitute_
 - Argument substitution for named args, positional fallback, and caller-supplied `${VAR}` variables
 - `substitute_args` with `variables={}` leaves `${UNKNOWN}` patterns unchanged and emits a DEBUG log
 - `SkillConfig.variables` dict is threaded through to `substitute_args`
-- `deprecated: true` skill excluded from `get_always_on()` and router manifest; still retrievable by name
 - `allowed-tools` list appears in manifest entry when declared; absent from manifest when not declared
 - `load_all_skills` returns a populated registry wired to `SkillHooks`
 
@@ -1251,7 +1228,7 @@ tests/
 | --------------------------- | ----------- | ---------------------------------------------------------------------------------- | -------------------------------------- |
 | **1 — Proto**               | ✅ Complete | `Skill`, `SkillHooks`, always-on injection                                         | `AgentHooks.on_llm_start`              |
 | **2 — Routing**             | ✅ Complete | `SkillRegistry`, `when_to_use` matching, manifest, `invoke_skill`, `RunSkillHooks` | `AgentHooks.on_start`, `RunHooks`      |
-| **3 — File skills**         | 🟡 Planned  | SKILL.md loading, frontmatter parsing, arg substitution, user + project dirs       | —                                      |
+| **3 — File skills**         | ✅ Complete | SKILL.md loading, frontmatter parsing, arg substitution, user + project dirs       | —                                      |
 | **4 — Advanced triggering** | 🟡 Planned  | Tool-result triggers, post-turn skills                                             | `AgentHooks.on_tool_end`, `on_llm_end` |
 | **5 — Hardening**           | 🟡 Planned  | Source trust levels, `allowed-tools` audit, full docs                              | —                                      |
 | **6 — Forked sub-agents**   | 🟡 Planned  | `context: fork` — isolated sub-agent execution                                     | `Runner.run()` (nested)                |

@@ -49,6 +49,14 @@ class Skill(ABC):
             used by routing logic.
         when_to_use: Prose description of when the skill should be triggered,
             including example phrases. Used by routing.
+        allowed_tools: Tools this skill may invoke. Defaults to an empty list
+            (no restriction). Surfaced in the skill manifest in Phase 3.
+            Instances that need their own list must set ``self.allowed_tools``
+            in ``__init__`` to avoid sharing the class-level default.
+        user_invocable: Whether this skill appears in the manifest shown to
+            the model. Set to ``False`` to hide internal or helper skills
+            from the manifest while still allowing them to be injected.
+            Defaults to ``True``.
 
     Example::
 
@@ -63,6 +71,8 @@ class Skill(ABC):
     name: str = ""
     description: str = ""
     when_to_use: str = ""
+    allowed_tools: list[str] = []
+    user_invocable: bool = True
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(name={self.name!r})"

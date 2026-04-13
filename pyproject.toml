@@ -23,7 +23,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
 ]
-dependencies = ["openai-agents>=0.1.0"]
+dependencies = ["openai-agents>=0.1.0", "pyyaml>=6.0"]
 
 [project.optional-dependencies]
 dev = [
@@ -34,6 +34,7 @@ dev = [
     "ruff>=0.14.0",
     "commitizen>=3.0.0",
     "pre-commit>=3.0.0",
+    "types-PyYAML>=6.0",
 ]
 
 [project.urls]
