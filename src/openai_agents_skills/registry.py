@@ -138,3 +138,34 @@ class SkillRegistry:
             return []
         names = await self._router.select(message, routable)
         return [self._skills[n] for n in names if n in self._skills]
+
+    def get_triggered_by_tool(self, tool_name: str) -> list[Skill]:
+        """Return enabled skills whose ``triggers_after_tools`` includes *tool_name*.
+
+        Called by ``on_tool_end`` to determine which skills to queue in
+        ``RunState.pending_skills`` after the named tool completes.
+
+        Args:
+            tool_name: The name of the tool that just finished executing.
+
+        Returns:
+            List of enabled skills triggered by *tool_name*, in registration order.
+            Returns an empty list when no skills declare this tool as a trigger.
+        """
+        return [
+            s
+            for s in self._skills.values()
+            if tool_name in s.triggers_after_tools and s.is_enabled()
+        ]
+
+    def get_post_turn(self) -> list[Skill]:
+        """Return enabled skills that fire after every model response.
+
+        Called by ``on_llm_end`` to queue skills with ``triggers_after_turn=True``
+        in ``RunState.pending_skills`` so they inject at the start of the next turn.
+
+        Returns:
+            List of enabled skills with ``triggers_after_turn=True``, in
+            registration order.
+        """
+        return [s for s in self._skills.values() if s.triggers_after_turn and s.is_enabled()]

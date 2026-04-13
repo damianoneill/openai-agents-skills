@@ -243,6 +243,59 @@ def _maybe_build_manifest_blocks(
     return [{"role": "user", "content": manifest_text}]
 
 
+async def _drain_pending(
+    state: RunState,
+    on_error: Callable[[Skill, Exception], None],
+) -> list[Any]:
+    """Drain skills queued in ``RunState.pending_skills`` and return their blocks.
+
+    Pending skills are queued by ``on_tool_end`` (tool-result triggers) and by
+    ``on_llm_end`` (post-turn triggers).  They are injected at the *next*
+    ``on_llm_start`` rather than the same turn to avoid mid-turn context changes.
+
+    Concurrency safety: both :class:`SkillHooks` and :class:`RunSkillHooks` may
+    call this function concurrently via ``asyncio.gather``.  Each skill name is
+    claimed in ``state.injected_this_call`` *before* the first ``await`` so that
+    only one of the concurrent callers processes it.  The ``pending_skills`` list
+    is cleared synchronously in the same un-interrupted block, preventing the
+    second caller from seeing stale entries.
+
+    Args:
+        state: The current run's :class:`~openai_agents_skills._state.RunState`.
+        on_error: Error handler called when ``get_prompt_blocks`` raises.
+
+    Returns:
+        Flat list of prompt blocks from all drained pending skills, in queue order.
+    """
+    if not state.pending_skills:
+        return []
+
+    # Claim each skill synchronously (no await) so that a concurrent caller
+    # finds an empty pending list and an already-populated injected_this_call.
+    to_drain: list[Skill] = []
+    for skill in state.pending_skills:
+        if skill.name not in state.injected_this_call:
+            state.injected_this_call.add(skill.name)
+            to_drain.append(skill)
+    state.pending_skills.clear()
+
+    if not to_drain:
+        return []
+
+    all_blocks: list[Any] = []
+    for skill in to_drain:
+        if not skill.is_enabled():
+            continue
+        try:
+            blocks = await skill.get_prompt_blocks()
+            all_blocks.extend(blocks)
+        except Exception as exc:
+            # Remove from seen on error so the skill can retry next turn.
+            state.injected_this_call.discard(skill.name)
+            on_error(skill, exc)
+    return all_blocks
+
+
 # ---------------------------------------------------------------------------
 # Shared injection mixin
 # ---------------------------------------------------------------------------
@@ -283,8 +336,9 @@ class _SkillInjectionMixin:
         """Core injection logic shared by both hook classes.
 
         Builds the optional first-call manifest, routes the message to select
-        conditional skills, merges with always-on and direct skills, then
-        prepends all resulting prompt blocks to *input_items*.
+        conditional skills, merges with always-on and direct skills, drains any
+        pending triggered skills, then prepends all resulting prompt blocks to
+        *input_items*.
         """
         state = _get_run_state()
 
@@ -301,16 +355,63 @@ class _SkillInjectionMixin:
         candidates = _resolve_candidates(self._skills, self._registry, routed)
         skill_blocks = await _collect_blocks(candidates, state.injected_this_call, self._on_error)
 
-        input_items[0:0] = manifest_blocks + skill_blocks
+        # Drain skills queued by tool-result or post-turn triggers.
+        pending_blocks = await _drain_pending(state, self._on_error)
 
-    def _clear_injection_state(self) -> None:
-        """Clear the per-call guard so skills re-inject on the next turn.
+        input_items[0:0] = manifest_blocks + skill_blocks + pending_blocks
 
-        Called from ``on_llm_end`` in both hook classes after every LLM response.
+    def _do_tool_end(self, tool_name: str) -> None:
+        """Queue skills triggered by the completion of a named tool.
+
+        Looks up skills whose ``triggers_after_tools`` includes *tool_name* and
+        appends each enabled, not-yet-pending skill to
+        ``RunState.pending_skills``.  The pending list is drained at the next
+        ``on_llm_start``.
+
+        Deduplication is name-based so that both :class:`SkillHooks` and
+        :class:`RunSkillHooks` firing for the same tool call do not enqueue the
+        same skill twice.
+
+        Args:
+            tool_name: The name of the tool that just finished executing.
+        """
+        if self._registry is None:
+            return
+        state = _get_run_state()
+        pending_names = {s.name for s in state.pending_skills}
+        for skill in self._registry.get_triggered_by_tool(tool_name):
+            if skill.name not in pending_names:
+                state.pending_skills.append(skill)
+                pending_names.add(skill.name)
+
+    def _do_llm_end(self) -> None:
+        """Clear the per-call guard and queue post-turn triggered skills.
+
+        Called from ``on_llm_end`` in both hook classes after every LLM
+        response.  Performs two actions:
+
+        1. Clears ``RunState.injected_this_call`` so that always-on and routed
+           skills re-inject on the next turn.
+        2. Appends skills with ``triggers_after_turn=True`` to
+           ``RunState.pending_skills`` so they inject at the start of the next
+           turn.
+
         The ``manifest_injected`` flag is intentionally *not* cleared — the
         manifest is a one-time injection for the lifetime of the run.
+
+        Deduplication is name-based so that both :class:`SkillHooks` and
+        :class:`RunSkillHooks` calling this method for the same LLM response do
+        not enqueue the same post-turn skill twice.
         """
-        _get_run_state().injected_this_call.clear()
+        state = _get_run_state()
+        state.injected_this_call.clear()
+        if self._registry is None:
+            return
+        pending_names = {s.name for s in state.pending_skills}
+        for skill in self._registry.get_post_turn():
+            if skill.name not in pending_names:
+                state.pending_skills.append(skill)
+                pending_names.add(skill.name)
 
 
 # ---------------------------------------------------------------------------
@@ -403,19 +504,42 @@ class SkillHooks(AgentHooks, _SkillInjectionMixin):
         """
         await self._do_llm_start(input_items)
 
+    async def on_tool_end(
+        self,
+        context: RunContextWrapper[Any],
+        agent: Agent[Any],
+        tool: Any,
+        result: str,
+    ) -> None:
+        """Queue skills triggered by the completion of *tool*.
+
+        Skills whose ``triggers_after_tools`` includes the tool's name are
+        appended to ``RunState.pending_skills`` for injection at the next
+        ``on_llm_start``.  Has no effect when no registry is configured.
+
+        Args:
+            context: The run context wrapper provided by the SDK.
+            agent: The agent currently executing.
+            tool: The tool that finished.  Its ``.name`` attribute identifies it.
+            result: The string result returned by the tool (not used directly).
+        """
+        self._do_tool_end(tool.name)
+
     async def on_llm_end(
         self,
         context: RunContextWrapper[Any],
         agent: Agent[Any],
         response: ModelResponse,
     ) -> None:
-        """Clear the per-call injection guard after the LLM responds.
+        """Clear the per-call injection guard and queue post-turn skills.
 
-        Resets ``RunState.injected_this_call`` so that skills are re-injected
-        on the next turn.  The manifest flag is not cleared — the manifest is
-        injected exactly once per run.
+        Resets ``RunState.injected_this_call`` so that always-on and routed
+        skills re-inject on the next turn.  Skills with
+        ``triggers_after_turn=True`` are appended to ``RunState.pending_skills``
+        for injection at the start of the next turn.  The manifest flag is not
+        cleared — the manifest is injected exactly once per run.
         """
-        self._clear_injection_state()
+        self._do_llm_end()
 
 
 # ---------------------------------------------------------------------------
@@ -487,19 +611,43 @@ class RunSkillHooks(RunHooks, _SkillInjectionMixin):
         """Prepend skill prompt blocks for all agents in the run."""
         await self._do_llm_start(input_items)
 
+    async def on_tool_end(
+        self,
+        context: RunContextWrapper[Any],
+        agent: Agent[Any],
+        tool: Any,
+        result: str,
+    ) -> None:
+        """Queue skills triggered by the completion of *tool*.
+
+        Skills whose ``triggers_after_tools`` includes the tool's name are
+        appended to ``RunState.pending_skills`` for injection at the next
+        ``on_llm_start``.  Fires for every agent in the run.  Has no effect
+        when no registry is configured.
+
+        Args:
+            context: The run context wrapper provided by the SDK.
+            agent: The agent currently executing.
+            tool: The tool that finished.  Its ``.name`` attribute identifies it.
+            result: The string result returned by the tool (not used directly).
+        """
+        self._do_tool_end(tool.name)
+
     async def on_llm_end(
         self,
         context: RunContextWrapper[Any],
         agent: Agent[Any],
         response: ModelResponse,
     ) -> None:
-        """Clear the per-call injection guard after the LLM responds.
+        """Clear the per-call injection guard and queue post-turn skills.
 
-        Resets ``RunState.injected_this_call`` so that skills are re-injected
-        on the next turn.  The manifest flag is not cleared — the manifest is
-        injected exactly once per run.
+        Resets ``RunState.injected_this_call`` so that always-on and routed
+        skills re-inject on the next turn.  Skills with
+        ``triggers_after_turn=True`` are appended to ``RunState.pending_skills``
+        for injection at the start of the next turn.  The manifest flag is not
+        cleared — the manifest is injected exactly once per run.
         """
-        self._clear_injection_state()
+        self._do_llm_end()
 
 
 # ---------------------------------------------------------------------------

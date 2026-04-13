@@ -13,6 +13,10 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .skills import Skill
 
 
 @dataclass
@@ -33,11 +37,16 @@ class RunState:
             call by on_llm_end so that skills re-inject on every subsequent turn.
         invoke_skill_calls: Running count of invoke_skill tool invocations this run.
             Used to enforce the max_calls_per_run guard.
+        pending_skills: Skills queued by tool-result triggers (on_tool_end) or
+            post-turn triggers (on_llm_end).  Drained and cleared at the next
+            on_llm_start.  Run-scoped via ContextVar so concurrent runs cannot
+            interfere.
     """
 
     manifest_injected: bool = False
     injected_this_call: set[str] = field(default_factory=set)
     invoke_skill_calls: int = 0
+    pending_skills: list[Skill] = field(default_factory=list)
 
 
 _run_state: ContextVar[RunState | None] = ContextVar("_run_state", default=None)

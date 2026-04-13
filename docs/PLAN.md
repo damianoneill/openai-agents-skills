@@ -1,6 +1,6 @@
 # openai-agents-skills: Implementation Plan
 
-> **Status:** Phase 3 complete ✅ — Phase 4 next
+> **Status:** Phase 4 complete ✅ — Phase 5 next
 
 ---
 
@@ -1007,7 +1007,7 @@ deduplication logic. `src/openai_agents_skills/substitution.py` — `substitute_
 
 ---
 
-## Phase 4 — Advanced Triggering
+## Phase 4 — Advanced Triggering ✅
 
 **Goal:** Richer triggering patterns beyond always-on and message-routed injection.
 Skills fire in response to tool results and after model turns.
@@ -1229,6 +1229,6 @@ tests/
 | **1 — Proto**               | ✅ Complete | `Skill`, `SkillHooks`, always-on injection                                         | `AgentHooks.on_llm_start`              |
 | **2 — Routing**             | ✅ Complete | `SkillRegistry`, `when_to_use` matching, manifest, `invoke_skill`, `RunSkillHooks` | `AgentHooks.on_start`, `RunHooks`      |
 | **3 — File skills**         | ✅ Complete | SKILL.md loading, frontmatter parsing, arg substitution, user + project dirs       | —                                      |
-| **4 — Advanced triggering** | 🟡 Planned  | Tool-result triggers, post-turn skills                                             | `AgentHooks.on_tool_end`, `on_llm_end` |
+| **4 — Advanced triggering** | ✅ Complete | Tool-result triggers, post-turn skills                                             | `AgentHooks.on_tool_end`, `on_llm_end` |
 | **5 — Hardening**           | 🟡 Planned  | Source trust levels, `allowed-tools` audit, full docs                              | —                                      |
 | **6 — Forked sub-agents**   | 🟡 Planned  | `context: fork` — isolated sub-agent execution                                     | `Runner.run()` (nested)                |

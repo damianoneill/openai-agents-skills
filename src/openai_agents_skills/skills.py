@@ -57,6 +57,16 @@ class Skill(ABC):
             the model. Set to ``False`` to hide internal or helper skills
             from the manifest while still allowing them to be injected.
             Defaults to ``True``.
+        triggers_after_tools: Tool names that should queue this skill for injection
+            on the next LLM call when the tool completes.  Empty list (default)
+            means no tool-result triggers.  Registered via
+            :class:`~openai_agents_skills.registry.SkillRegistry`; queued by
+            ``on_tool_end`` in :class:`~openai_agents_skills.hooks.SkillHooks` /
+            :class:`~openai_agents_skills.hooks.RunSkillHooks`.
+        triggers_after_turn: When ``True``, this skill is queued in
+            ``pending_skills`` after every model response (``on_llm_end``) and
+            injected at the start of the next turn.  Useful for quality checks,
+            memory consolidation, or review workflows.  Defaults to ``False``.
 
     Example::
 
@@ -73,6 +83,8 @@ class Skill(ABC):
     when_to_use: str = ""
     allowed_tools: list[str] = []
     user_invocable: bool = True
+    triggers_after_tools: list[str] = []
+    triggers_after_turn: bool = False
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(name={self.name!r})"
