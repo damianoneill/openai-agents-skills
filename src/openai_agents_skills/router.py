@@ -142,8 +142,10 @@ class LLMSkillRouter:
             )
             return []
 
-        # Evict oldest entry when the cache is full.
-        if len(self._cache) >= self._cache_size:
-            self._cache.popitem(last=False)
-        self._cache[message] = result
+        # Store result; evict the oldest entry when the cache is full.
+        # Guard against cache_size=0 (disabled caching) to avoid popping an empty dict.
+        if self._cache_size > 0:
+            if len(self._cache) >= self._cache_size:
+                self._cache.popitem(last=False)
+            self._cache[message] = result
         return list(result)

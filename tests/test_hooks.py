@@ -62,6 +62,15 @@ async def _fire(hooks: SkillHooks, input_items: list[Any]) -> None:
     )
 
 
+async def _fire_end(hooks: SkillHooks, input_items: list[Any]) -> None:
+    """Invoke on_llm_end with the minimal required arguments."""
+    await hooks.on_llm_end(
+        context=None,  # type: ignore[arg-type]
+        agent=None,  # type: ignore[arg-type]
+        response=None,  # type: ignore[arg-type]
+    )
+
+
 # ---------------------------------------------------------------------------
 # Injection
 # ---------------------------------------------------------------------------
@@ -210,3 +219,55 @@ class TestDisabledSkills:
         await _fire(hooks, items)
 
         assert items == [{"role": "user", "content": "original"}]
+
+
+# ---------------------------------------------------------------------------
+# Multi-turn injection
+# ---------------------------------------------------------------------------
+
+
+class TestMultiTurnInjection:
+    async def test_skill_reinjects_after_on_llm_end_clears_guard(self) -> None:
+        """Skills re-inject on every turn; on_llm_end resets the per-call guard."""
+        hooks = SkillHooks([_AlwaysOnSkill("content")])
+
+        # Turn 1.
+        items_turn1: list[Any] = []
+        await _fire(hooks, items_turn1)
+        assert items_turn1 == [{"role": "user", "content": "content"}]
+
+        # on_llm_end resets the injection guard.
+        await _fire_end(hooks, items_turn1)
+
+        # Turn 2: skill must inject again on the new call.
+        items_turn2: list[Any] = []
+        await _fire(hooks, items_turn2)
+        assert items_turn2 == [{"role": "user", "content": "content"}]
+
+    async def test_without_on_llm_end_skill_not_reinjected_in_same_run(self) -> None:
+        """Without on_llm_end the per-call guard is not cleared between turns.
+
+        This documents the behaviour when the guard accumulates across calls in the
+        same run (e.g. if the SDK does not fire on_llm_end in an error path).
+        """
+        hooks = SkillHooks([_AlwaysOnSkill("content")])
+
+        items_turn1: list[Any] = []
+        await _fire(hooks, items_turn1)
+
+        # No on_llm_end call — guard is still populated.
+        items_turn2: list[Any] = []
+        await _fire(hooks, items_turn2)
+
+        # The guard was not cleared; injection is skipped on the second call.
+        assert items_turn2 == []
+
+    async def test_multiple_turns_each_injects_after_clear(self) -> None:
+        """Each turn (separated by on_llm_end) injects independently."""
+        hooks = SkillHooks([_AlwaysOnSkill("block")])
+
+        for _ in range(3):
+            items: list[Any] = []
+            await _fire(hooks, items)
+            assert items == [{"role": "user", "content": "block"}]
+            await _fire_end(hooks, items)

@@ -50,6 +50,7 @@ packages = ["src/openai_agents_skills"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["tests"]
 
 [tool.mypy]
 python_version = "3.11"

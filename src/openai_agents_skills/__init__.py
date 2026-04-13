@@ -49,11 +49,11 @@ Requirements::
     pip install openai-agents-skills
 """
 
-from openai_agents_skills._version import __version__
-from openai_agents_skills.hooks import RunSkillHooks, SkillHooks, make_invoke_skill_tool
-from openai_agents_skills.registry import SkillRegistry
-from openai_agents_skills.router import LLMSkillRouter, SkillRouter
-from openai_agents_skills.skills import Skill
+from ._version import __version__
+from .hooks import RunSkillHooks, SkillHooks, make_invoke_skill_tool
+from .registry import SkillRegistry
+from .router import LLMSkillRouter, SkillRouter
+from .skills import Skill
 
 __all__ = [
     "__version__",

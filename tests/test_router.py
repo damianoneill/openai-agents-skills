@@ -405,8 +405,31 @@ class TestLLMSkillRouterCaching:
 
         count_before2 = mock_create.call_count
 
-        # beta still cached (it was just evicted when alpha was re-added, but we
-        # only care that the immediately prior message is cached).
-        # Actually after re-adding alpha, cache = {alpha}. So beta is evicted.
+        # After re-adding alpha, cache = {alpha}.  Beta was evicted.
         await router.select("beta", skills)
         assert mock_create.call_count == count_before2 + 1
+
+
+class TestLLMSkillRouterCacheSizeZero:
+    async def test_cache_size_zero_never_caches_results(self) -> None:
+        """cache_size=0 disables the cache entirely; every call hits the LLM."""
+        mock_client, mock_create = _make_mock_client('{"selected": ["skill_a"]}')
+        router = LLMSkillRouter(client=mock_client, model="gpt-4o-mini", cache_size=0)
+        skills = [_RoutableSkill()]
+
+        await router.select("same message", skills)
+        await router.select("same message", skills)
+        await router.select("same message", skills)
+
+        # Every call is a cache miss because caching is disabled.
+        assert mock_create.call_count == 3
+
+    async def test_cache_size_zero_does_not_raise(self) -> None:
+        """cache_size=0 must not raise KeyError or any other exception."""
+        mock_client, _ = _make_mock_client('{"selected": []}')
+        router = LLMSkillRouter(client=mock_client, model="gpt-4o-mini", cache_size=0)
+        skills = [_RoutableSkill()]
+
+        # Should complete without any exception.
+        result = await router.select("any message", skills)
+        assert isinstance(result, list)

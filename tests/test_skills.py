@@ -176,3 +176,45 @@ class TestSkillSubclass:
         assert sk.name == "my_skill"
         assert sk.description == "My description."
         assert sk.when_to_use == "Use when you need my_skill."
+
+
+# ---------------------------------------------------------------------------
+# __repr__
+# ---------------------------------------------------------------------------
+
+
+class TestSkillRepr:
+    def test_repr_includes_class_name_and_skill_name(self) -> None:
+        class MySkill(Skill):
+            name = "my_skill"
+            description = "A test skill."
+
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                return []
+
+        result = repr(MySkill())
+
+        assert "MySkill" in result
+        assert "my_skill" in result
+
+    def test_repr_with_empty_name(self) -> None:
+        """A skill with the default empty name still has a valid repr."""
+
+        class NoNameSkill(Skill):
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                return []
+
+        result = repr(NoNameSkill())
+
+        assert "NoNameSkill" in result
+        assert "name=" in result
+
+    def test_repr_format(self) -> None:
+        class CitationSkill(Skill):
+            name = "citation"
+            description = "Cite sources."
+
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                return []
+
+        assert repr(CitationSkill()) == "CitationSkill(name='citation')"

@@ -64,6 +64,9 @@ class Skill(ABC):
     description: str = ""
     when_to_use: str = ""
 
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(name={self.name!r})"
+
     def is_enabled(self) -> bool:
         """Return True if this skill should be injected on the current call.
 

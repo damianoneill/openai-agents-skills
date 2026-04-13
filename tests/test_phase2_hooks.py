@@ -11,7 +11,8 @@ import logging
 from typing import Any
 
 import pytest
-from agents.tool import ToolContext
+from agents.tool_context import ToolContext
+from conftest import MockRouter
 
 from openai_agents_skills import (
     RunSkillHooks,
@@ -80,18 +81,6 @@ class _ErrorSkill(Skill):
 
     async def get_prompt_blocks(self, args: str = "") -> list[Any]:
         raise ValueError(f"Skill {self.name!r} intentionally failed")
-
-
-class MockRouter:
-    """Minimal mock router that returns pre-configured skill names."""
-
-    def __init__(self, names: list[str]) -> None:
-        self._names = names
-        self.calls: list[tuple[str, list[str]]] = []
-
-    async def select(self, message: str, skills: list[Skill]) -> list[str]:
-        self.calls.append((message, [s.name for s in skills]))
-        return list(self._names)
 
 
 async def _fire(
@@ -619,21 +608,36 @@ class TestManifestInjection:
 
     async def test_manifest_not_reinjected_on_second_call(self) -> None:
         registry = SkillRegistry()
-        registry.register(_SimpleSkill("myskill"))
+        registry.register(_SimpleSkill("myskill", content="skill content"))
 
         hooks = SkillHooks(registry=registry)
         items_first: list[Any] = []
         items_second: list[Any] = []
 
         await _fire(hooks, items_first)
+
+        # on_llm_end clears the per-call guard so skills can re-inject.
+        await hooks.on_llm_end(
+            context=None,  # type: ignore[arg-type]
+            agent=None,  # type: ignore[arg-type]
+            response=None,  # type: ignore[arg-type]
+        )
+
         await _fire(hooks, items_second)
 
+        # Manifest must NOT appear on the second call (manifest_injected persists).
         manifest_count_second = sum(
             1
             for item in items_second
             if isinstance(item.get("content"), str) and "Available Skills" in item["content"]
         )
         assert manifest_count_second == 0
+
+        # Skill content MUST appear on the second call (injection guard was reset).
+        skill_count_second = sum(
+            1 for item in items_second if item.get("content") == "skill content"
+        )
+        assert skill_count_second == 1
 
     async def test_manifest_contains_registered_skill_names(self) -> None:
         registry = SkillRegistry()
@@ -842,7 +846,7 @@ class TestDoubleInjectionGuard:
         shared_blocks = [item for item in items if item.get("content") == "shared content"]
         assert len(shared_blocks) == 1
 
-    async def test_injected_this_call_set_populated_after_injection(self) -> None:
+    async def test_injected_this_call_set_populated_during_injection(self) -> None:
         skill = _SimpleSkill("tracked", content="tracked")
 
         hooks = SkillHooks(skills=[skill])
@@ -851,7 +855,7 @@ class TestDoubleInjectionGuard:
         state = _get_run_state()
         assert "tracked" in state.injected_this_call
 
-    async def test_skill_skipped_if_already_in_injected_this_call(self) -> None:
+    async def test_skill_skipped_if_already_in_injected_this_call_guard(self) -> None:
         """Manually pre-populating injected_this_call prevents re-injection."""
         skill = _SimpleSkill("pre_seen", content="pre_seen content")
 
@@ -884,6 +888,31 @@ class TestDoubleInjectionGuard:
         contents = _injected_contents(items)
         assert "run content" in contents
         assert "agent content" in contents
+
+    async def test_concurrent_gather_injects_shared_skill_only_once(self) -> None:
+        """When RunSkillHooks and SkillHooks fire concurrently via asyncio.gather,
+        a skill registered in both injects exactly once."""
+        import asyncio
+
+        skill = _SimpleSkill("shared", content="shared content")
+        run_hooks = RunSkillHooks(skills=[skill])
+        agent_hooks = SkillHooks(skills=[skill])
+
+        # Prime RunState in the parent task so both hooks share the same object.
+        _get_run_state()
+
+        items: list[Any] = [{"role": "user", "content": "question"}]
+
+        async def fire_run() -> None:
+            await _fire(run_hooks, items)
+
+        async def fire_agent() -> None:
+            await _fire(agent_hooks, items)
+
+        await asyncio.gather(fire_run(), fire_agent())
+
+        shared_blocks = [item for item in items if item.get("content") == "shared content"]
+        assert len(shared_blocks) == 1
 
 
 # ---------------------------------------------------------------------------

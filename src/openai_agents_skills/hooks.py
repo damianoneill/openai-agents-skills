@@ -5,8 +5,11 @@ The injection mechanism:
   every model invocation, then passes the same list to ``model.get_response()``.
 - Blocks prepended inside the hook are seen by the LLM on that call.
 - The SDK fires both ``run_hooks.on_llm_start`` and ``agent.hooks.on_llm_start`` via
-  ``asyncio.gather``.  The per-call double-injection guard in ``RunState.injected_this_call``
-  prevents duplicate injection when both hook types are active simultaneously.
+  ``asyncio.gather``.  The per-call double-injection guard in
+  ``RunState.injected_this_call`` prevents duplicate injection when both hook types
+  are active simultaneously.
+- ``on_llm_end`` clears the guard after every LLM call so that skills re-inject on
+  every subsequent turn.
 
 Usage::
 
@@ -43,6 +46,7 @@ from agents import (
     AgentHookContext,
     AgentHooks,
     FunctionTool,
+    ModelResponse,
     RunContextWrapper,
     RunHooks,
     function_tool,
@@ -144,9 +148,10 @@ async def _collect_blocks(
 ) -> list[Any]:
     """Iterate *skills*, skip duplicates and disabled ones, collect prompt blocks.
 
-    Adds each injected skill's name to *seen* before awaiting ``get_prompt_blocks``
-    so that the double-injection guard is effective even when coroutines interleave
-    at the await point.
+    Adds each skill's name to *seen* before awaiting ``get_prompt_blocks`` so that
+    the double-injection guard is effective even when coroutines interleave at the
+    await point.  On error the name is removed from *seen* so the skill gets a
+    fresh attempt on the next LLM call (after ``on_llm_end`` clears the set).
 
     Args:
         skills: Deduplicated candidate skills.
@@ -162,11 +167,15 @@ async def _collect_blocks(
             continue
         if not skill.is_enabled():
             continue
+        # Add to seen before the await so that a concurrent hook sees the name
+        # and skips the skill, preventing duplicate injection on the same LLM call.
         seen.add(skill.name)
         try:
             blocks = await skill.get_prompt_blocks()
             all_blocks.extend(blocks)
         except Exception as exc:
+            # Remove from seen on error so the skill retries on the next turn.
+            seen.discard(skill.name)
             on_error(skill, exc)
     return all_blocks
 
@@ -196,16 +205,118 @@ def _resolve_candidates(
     return _deduplicate([*base, *routed])
 
 
+def _maybe_build_manifest_blocks(
+    state: RunState,
+    registry: SkillRegistry | None,
+    max_manifest_skills: int | None,
+) -> list[Any]:
+    """Build and return the manifest block list if this is the first LLM call.
+
+    Mutates ``state.manifest_injected`` to prevent re-injection on subsequent
+    turns.
+
+    Args:
+        state: The current run's ``RunState``.
+        registry: The registry to build the manifest from.  Returns ``[]`` if
+            ``None``.
+        max_manifest_skills: Optional cap on the number of skills listed.
+
+    Returns:
+        A one-element list containing the manifest user message dict, or ``[]``.
+    """
+    if state.manifest_injected or registry is None:
+        return []
+    state.manifest_injected = True
+    manifest_text = _build_manifest(registry.all_skills, max_manifest_skills)
+    if not manifest_text:
+        return []
+    return [{"role": "user", "content": manifest_text}]
+
+
+# ---------------------------------------------------------------------------
+# Shared injection mixin
+# ---------------------------------------------------------------------------
+
+
+class _SkillInjectionMixin:
+    """Shared ``__init__`` and ``on_llm_start`` logic for SkillHooks and RunSkillHooks.
+
+    Not part of the public API.  Both hook classes share identical constructor
+    parameters and an identical ``on_llm_start`` body; extracting them here
+    ensures that any future change to injection logic has a single point of edit.
+    """
+
+    # Class-level type annotations so mypy understands the attributes set by
+    # _init_injection without needing a concrete self type.
+    _skills: list[Skill]
+    _registry: SkillRegistry | None
+    _routing_context_turns: int | None
+    _on_error: Callable[[Skill, Exception], None]
+    _max_manifest_skills: int | None
+
+    def _init_injection(
+        self,
+        skills: list[Skill] | None,
+        registry: SkillRegistry | None,
+        routing_context_turns: int | None,
+        on_skill_error: Callable[[Skill, Exception], None] | None,
+        max_manifest_skills: int | None,
+    ) -> None:
+        """Initialise the shared injection state.  Called from each subclass ``__init__``."""
+        self._skills = list(skills or [])
+        self._registry = registry
+        self._routing_context_turns = routing_context_turns
+        self._on_error = on_skill_error if on_skill_error is not None else _default_on_skill_error
+        self._max_manifest_skills = max_manifest_skills
+
+    async def _do_llm_start(self, input_items: list[Any]) -> None:
+        """Core injection logic shared by both hook classes.
+
+        Builds the optional first-call manifest, routes the message to select
+        conditional skills, merges with always-on and direct skills, then
+        prepends all resulting prompt blocks to *input_items*.
+        """
+        state = _get_run_state()
+
+        manifest_blocks: list[Any] = _maybe_build_manifest_blocks(
+            state, self._registry, self._max_manifest_skills
+        )
+
+        routed: list[Skill] = []
+        if self._registry is not None:
+            routing_ctx = _extract_routing_context(input_items, turns=self._routing_context_turns)
+            if routing_ctx:
+                routed = await self._registry.select_for_message(routing_ctx)
+
+        candidates = _resolve_candidates(self._skills, self._registry, routed)
+        skill_blocks = await _collect_blocks(candidates, state.injected_this_call, self._on_error)
+
+        input_items[0:0] = manifest_blocks + skill_blocks
+
+    def _clear_injection_state(self) -> None:
+        """Clear the per-call guard so skills re-inject on the next turn.
+
+        Called from ``on_llm_end`` in both hook classes after every LLM response.
+        The ``manifest_injected`` flag is intentionally *not* cleared — the
+        manifest is a one-time injection for the lifetime of the run.
+        """
+        _get_run_state().injected_this_call.clear()
+
+
 # ---------------------------------------------------------------------------
 # SkillHooks — per-agent hook
 # ---------------------------------------------------------------------------
 
 
-class SkillHooks(AgentHooks):
+class SkillHooks(AgentHooks, _SkillInjectionMixin):
     """``AgentHooks`` implementation that injects skills before each LLM call.
 
     Supports both the simple Phase 1 interface (``skills`` list) and Phase 2
     registry-based routing.
+
+    Skills are re-injected on every LLM call within the run.  The
+    ``on_llm_end`` callback clears the per-call injection guard after each model
+    response, so skills are fresh for the next turn.
 
     Args:
         skills: Skill instances to inject unconditionally.  When *registry* is
@@ -242,13 +353,9 @@ class SkillHooks(AgentHooks):
         on_skill_error: Callable[[Skill, Exception], None] | None = None,
         max_manifest_skills: int | None = None,
     ) -> None:
-        self._skills: list[Skill] = list(skills or [])
-        self._registry = registry
-        self._routing_context_turns = routing_context_turns
-        self._on_error: Callable[[Skill, Exception], None] = (
-            on_skill_error if on_skill_error is not None else _default_on_skill_error
+        self._init_injection(
+            skills, registry, routing_context_turns, on_skill_error, max_manifest_skills
         )
-        self._max_manifest_skills = max_manifest_skills
 
     async def on_start(
         self,
@@ -284,22 +391,21 @@ class SkillHooks(AgentHooks):
             input_items: Mutable list of input items.  Blocks prepended here are
                 seen by the model.
         """
-        state = _get_run_state()
+        await self._do_llm_start(input_items)
 
-        manifest_blocks: list[Any] = _maybe_build_manifest_blocks(
-            state, self._registry, self._max_manifest_skills
-        )
+    async def on_llm_end(
+        self,
+        context: RunContextWrapper[Any],
+        agent: Agent[Any],
+        response: ModelResponse,
+    ) -> None:
+        """Clear the per-call injection guard after the LLM responds.
 
-        routed: list[Skill] = []
-        if self._registry is not None:
-            routing_ctx = _extract_routing_context(input_items, turns=self._routing_context_turns)
-            if routing_ctx:
-                routed = await self._registry.select_for_message(routing_ctx)
-
-        candidates = _resolve_candidates(self._skills, self._registry, routed)
-        skill_blocks = await _collect_blocks(candidates, state.injected_this_call, self._on_error)
-
-        input_items[0:0] = manifest_blocks + skill_blocks
+        Resets ``RunState.injected_this_call`` so that skills are re-injected
+        on the next turn.  The manifest flag is not cleared — the manifest is
+        injected exactly once per run.
+        """
+        self._clear_injection_state()
 
 
 # ---------------------------------------------------------------------------
@@ -307,13 +413,17 @@ class SkillHooks(AgentHooks):
 # ---------------------------------------------------------------------------
 
 
-class RunSkillHooks(RunHooks):
+class RunSkillHooks(RunHooks, _SkillInjectionMixin):
     """``RunHooks`` variant that applies skills across every agent in a run.
 
     Attach to ``Runner.run(..., hooks=RunSkillHooks(...))`` to enable skills without
-    configuring each ``Agent`` individually.  Uses the same per-run double-injection
+    configuring each ``Agent`` individually.  Uses the same per-call double-injection
     guard as :class:`SkillHooks` — a skill registered in both ``RunSkillHooks`` and
     a per-agent ``SkillHooks`` injects only once per LLM call.
+
+    Skills are re-injected on every LLM call within the run.  The
+    ``on_llm_end`` callback clears the per-call injection guard after each model
+    response, so skills are fresh for the next turn.
 
     Args:
         skills: Skill instances to inject unconditionally.
@@ -339,13 +449,9 @@ class RunSkillHooks(RunHooks):
         on_skill_error: Callable[[Skill, Exception], None] | None = None,
         max_manifest_skills: int | None = None,
     ) -> None:
-        self._skills: list[Skill] = list(skills or [])
-        self._registry = registry
-        self._routing_context_turns = routing_context_turns
-        self._on_error: Callable[[Skill, Exception], None] = (
-            on_skill_error if on_skill_error is not None else _default_on_skill_error
+        self._init_injection(
+            skills, registry, routing_context_turns, on_skill_error, max_manifest_skills
         )
-        self._max_manifest_skills = max_manifest_skills
 
     async def on_agent_start(
         self,
@@ -369,22 +475,21 @@ class RunSkillHooks(RunHooks):
         input_items: list[Any],
     ) -> None:
         """Prepend skill prompt blocks for all agents in the run."""
-        state = _get_run_state()
+        await self._do_llm_start(input_items)
 
-        manifest_blocks: list[Any] = _maybe_build_manifest_blocks(
-            state, self._registry, self._max_manifest_skills
-        )
+    async def on_llm_end(
+        self,
+        context: RunContextWrapper[Any],
+        agent: Agent[Any],
+        response: ModelResponse,
+    ) -> None:
+        """Clear the per-call injection guard after the LLM responds.
 
-        routed: list[Skill] = []
-        if self._registry is not None:
-            routing_ctx = _extract_routing_context(input_items, turns=self._routing_context_turns)
-            if routing_ctx:
-                routed = await self._registry.select_for_message(routing_ctx)
-
-        candidates = _resolve_candidates(self._skills, self._registry, routed)
-        skill_blocks = await _collect_blocks(candidates, state.injected_this_call, self._on_error)
-
-        input_items[0:0] = manifest_blocks + skill_blocks
+        Resets ``RunState.injected_this_call`` so that skills are re-injected
+        on the next turn.  The manifest flag is not cleared — the manifest is
+        injected exactly once per run.
+        """
+        self._clear_injection_state()
 
 
 # ---------------------------------------------------------------------------
@@ -448,37 +553,3 @@ def make_invoke_skill_tool(
         )
 
     return invoke_skill
-
-
-# ---------------------------------------------------------------------------
-# Private helpers
-# ---------------------------------------------------------------------------
-
-
-def _maybe_build_manifest_blocks(
-    state: RunState,
-    registry: SkillRegistry | None,
-    max_manifest_skills: int | None,
-) -> list[Any]:
-    """Build and return the manifest block list if this is the first LLM call.
-
-    Mutates ``state.manifest_injected`` to prevent re-injection on subsequent
-    turns.
-
-    Args:
-        state: The current run's ``RunState``.
-        registry: The registry to build the manifest from.  Returns ``[]`` if
-            ``None``.
-        max_manifest_skills: Optional cap on the number of skills listed.
-
-    Returns:
-        A one-element list containing the manifest user message dict, or ``[]``.
-    """
-    if state.manifest_injected or registry is None:
-        return []
-    state.manifest_injected = True
-    all_skills = list(registry._skills.values())
-    manifest_text = _build_manifest(all_skills, max_manifest_skills)
-    if not manifest_text:
-        return []
-    return [{"role": "user", "content": manifest_text}]

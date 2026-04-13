@@ -5,6 +5,23 @@ from __future__ import annotations
 import pytest
 
 from openai_agents_skills._state import _run_state
+from openai_agents_skills.skills import Skill
+
+
+class MockRouter:
+    """Simple mock router that records calls and returns pre-configured names.
+
+    Shared across test files to eliminate duplication.
+    """
+
+    def __init__(self, names: list[str]) -> None:
+        self._names = names
+        # Each entry is (message, [skill_name, ...]) so callers can inspect what was passed.
+        self.calls: list[tuple[str, list[str]]] = []
+
+    async def select(self, message: str, skills: list[Skill]) -> list[str]:
+        self.calls.append((message, [s.name for s in skills]))
+        return list(self._names)
 
 
 @pytest.fixture(autouse=True)

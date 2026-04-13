@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from conftest import MockRouter
 
 from openai_agents_skills import Skill, SkillRegistry
 
@@ -60,17 +61,13 @@ class _SecondAlwaysOnSkill(Skill):
         return [{"role": "user", "content": "second content"}]
 
 
-class MockRouter:
-    """Simple mock router that records calls and returns pre-configured names."""
+class _RoutableB(Skill):
+    name = "routable_b"
+    description = "B"
+    when_to_use = "Use for B."
 
-    def __init__(self, names: list[str]) -> None:
-        self._names = names
-        # Each entry is (message, [skill_name, ...]) so callers can inspect what was passed.
-        self.calls: list[tuple[str, list[str]]] = []
-
-    async def select(self, message: str, skills: list[Skill]) -> list[str]:
-        self.calls.append((message, [s.name for s in skills]))
-        return list(self._names)
+    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +138,34 @@ class TestRegisterGetUnregister:
             registry.get("always_on")
         # Other skill is still accessible.
         assert registry.get("routable") is not None
+
+    def test_register_empty_name_raises_value_error(self) -> None:
+        """Registering a skill with an empty name must raise ValueError."""
+
+        class _UnnamedSkill(Skill):
+            name = ""
+            description = "No name."
+
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                return []
+
+        registry = SkillRegistry()
+        with pytest.raises(ValueError, match="empty"):
+            registry.register(_UnnamedSkill())
+
+    def test_register_whitespace_only_name_raises_value_error(self) -> None:
+        """Registering a skill with a whitespace-only name must raise ValueError."""
+
+        class _WhitespaceSkill(Skill):
+            name = "   "
+            description = "Whitespace name."
+
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                return []
+
+        registry = SkillRegistry()
+        with pytest.raises(ValueError, match="empty"):
+            registry.register(_WhitespaceSkill())
 
 
 # ---------------------------------------------------------------------------
@@ -392,14 +417,6 @@ class TestSelectForMessageWithRouter:
     async def test_router_returns_multiple_skills_in_order(self) -> None:
         """The order of names returned by the router is preserved."""
 
-        class _RoutableB(Skill):
-            name = "routable_b"
-            description = "B"
-            when_to_use = "Use for B."
-
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
-                return []
-
         router = MockRouter(names=["routable", "routable_b"])
         registry = SkillRegistry(router=router)
         skill_a = _RoutableSkill()
@@ -425,3 +442,29 @@ class TestSelectForMessageWithRouter:
         assert result == []
         # Disabled skill has empty when_to_use, so router is not called at all.
         assert len(router.calls) == 0
+
+    async def test_disabled_routable_skill_not_forwarded_to_router(self) -> None:
+        """A routable skill that returns False from is_enabled() must not be
+        forwarded to the router — disabled skills waste routing tokens."""
+
+        class _DisabledRoutable(Skill):
+            name = "disabled_routable"
+            description = "Disabled but routable."
+            when_to_use = "Use when routing."
+
+            def is_enabled(self) -> bool:
+                return False
+
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                return []
+
+        router = MockRouter(names=["disabled_routable"])
+        registry = SkillRegistry(router=router)
+        registry.register(_DisabledRoutable())
+
+        result = await registry.select_for_message("test")
+
+        # The router should not have been called because there are no enabled
+        # routable skills to forward.
+        assert len(router.calls) == 0
+        assert result == []

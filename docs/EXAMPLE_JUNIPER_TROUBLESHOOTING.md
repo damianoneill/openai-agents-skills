@@ -21,6 +21,10 @@ await asyncio.gather(
     agent.hooks.on_llm_start(ctx, agent, filtered.instructions, filtered.input),
 )
 response = await model.get_response(input=filtered.input, ...)  # same list object
+await asyncio.gather(
+    run_hooks.on_llm_end(ctx, agent, response),
+    agent.hooks.on_llm_end(ctx, agent, response),
+)
 ```
 
 `filtered.input` is a **mutable Python list passed by reference**. Items prepended
@@ -33,9 +37,10 @@ fires:
 | Agent calls a tool and the loop re-invokes the LLM to reason about the result | ✅ Every time     |
 | A handoff occurs and the receiving agent's LLM is called                      | ✅ For that agent |
 
-Skill injection is therefore **re-evaluated on every LLM invocation**. This is why
-routing (deciding which skills to inject) and the `is_enabled()` gate are load-bearing,
-not optional — you do not want to blindly dump every skill into every call.
+Skill injection is therefore **re-evaluated on every LLM invocation** — `on_llm_end`
+resets the injection guard after each model call so skills inject fresh on the next
+turn. This is why routing and the `is_enabled()` gate are load-bearing, not optional —
+you do not want to blindly dump every skill into every call.
 
 ---
 
@@ -274,6 +279,8 @@ User: "My BGP session to 10.1.1.1 keeps flapping... [log output]"
 │   ├─ Inject:    [escalation-policy] + [bgp-troubleshooting] + [log-parser]
 │   └─ model.get_response() → "Confirm peer IP, try: show bgp neighbor 10.1.1.1"
 │
+├─ on_llm_end   → injected_this_call cleared ✦ skills will re-inject on next call
+│
 ├─ on_tool_start  → run_show_command("show bgp neighbor 10.1.1.1")
 ├─ on_tool_end    → result appended to input_items
 │
@@ -282,6 +289,8 @@ User: "My BGP session to 10.1.1.1 keeps flapping... [log output]"
 │   ├─ Router →   cache HIT (same message) → ["bgp-troubleshooting", "log-parser"]
 │   ├─ Inject:    [escalation-policy] + [bgp-troubleshooting] + [log-parser]
 │   └─ model.get_response() → "Output shows AS 65001; expected 65002. Likely mismatch."
+│
+├─ on_llm_end   → injected_this_call cleared ✦ skills will re-inject on next call
 │
 User: "The peer IP looks right. Could it be an AS number mismatch?"
 │

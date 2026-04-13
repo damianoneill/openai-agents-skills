@@ -145,6 +145,9 @@ class Skill(ABC):
     description: str = ""
     when_to_use: str = ""           # used by Phase 2 routing
 
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(name={self.name!r})"
+
     def is_enabled(self) -> bool:   # override to gate dynamically
         return True
 
@@ -191,12 +194,18 @@ Introduce `SkillRegistry` — a routing layer that decides which skills fire and
 # src/openai_agents_skills/registry.py
 
 class SkillRegistry:
-    def register(self, skill: Skill) -> None: ...
+    def register(self, skill: Skill) -> None:
+        """Raises ValueError if skill.name is empty or whitespace-only."""
+        ...
     def unregister(self, name: str) -> None: ...
     def get(self, name: str) -> Skill: ...
 
     @property
     def skill_names(self) -> list[str]: ...
+
+    @property
+    def all_skills(self) -> list[Skill]:
+        """All registered skills in registration order."""
 
     def get_always_on(self) -> list[Skill]:
         """Skills with no when_to_use (always-on) whose is_enabled() returns True."""
@@ -330,7 +339,13 @@ class SkillRegistry:
     async def select_for_message(self, message: str) -> list[Skill]:
         if self._router is None:
             return []
-        names = await self._router.select(message, list(self._skills.values()))
+        # Only enabled skills with a declared when_to_use are forwarded to the
+        # router — disabled skills are filtered out here rather than wasting
+        # routing tokens on skills that will be dropped at injection time.
+        routable = [s for s in self._skills.values() if s.when_to_use and s.is_enabled()]
+        if not routable:
+            return []
+        names = await self._router.select(message, routable)
         return [self._skills[n] for n in names if n in self._skills]
 ```
 
@@ -382,35 +397,56 @@ that output mean?".
 a routing context string from `input_items` and uses `select_for_message` to identify
 which skills to fire alongside the always-on unconditional set.
 
+Both `SkillHooks` and `RunSkillHooks` share identical constructor parameters and an
+identical `on_llm_start` body. The shared logic lives in a private
+`_SkillInjectionMixin` — a single point of edit for all future injection changes.
+
 ```python
-class SkillHooks(AgentHooks):
+class _SkillInjectionMixin:
+    # Shared __init__ params and on_llm_start / on_llm_end body.
+
+    def _init_injection(
+        self,
+        skills: list[Skill] | None,
+        registry: SkillRegistry | None,
+        routing_context_turns: int | None,
+        on_skill_error: Callable | None,
+        max_manifest_skills: int | None,
+    ) -> None: ...
+
+    async def _do_llm_start(self, input_items: list) -> None:
+        state = _get_run_state()
+        manifest_blocks = _maybe_build_manifest_blocks(state, self._registry, ...)
+        routing_ctx = _extract_routing_context(input_items, turns=self._routing_context_turns)
+        routed = await self._registry.select_for_message(routing_ctx) if self._registry else []
+        candidates = _resolve_candidates(self._skills, self._registry, routed)
+        skill_blocks = await _collect_blocks(candidates, state.injected_this_call, self._on_error)
+        input_items[0:0] = manifest_blocks + skill_blocks
+
+    def _clear_injection_state(self) -> None:
+        """Clear injected_this_call — called from on_llm_end."""
+        _get_run_state().injected_this_call.clear()
+
+
+class SkillHooks(AgentHooks, _SkillInjectionMixin):
     def __init__(
         self,
         skills: list[Skill] | None = None,
         registry: SkillRegistry | None = None,
         routing_context_turns: int | None = 1,
+        on_skill_error: Callable | None = None,
+        max_manifest_skills: int | None = None,
     ) -> None:
-        # When both are provided, `skills` are treated as additional unconditional
-        # skills merged with registry.get_always_on(). Registry routing applies on top.
-        # Duplicates (by name) are deduplicated — registry skill wins.
-        #
-        # routing_context_turns controls how many recent user messages are collected
-        # and joined into the routing context string. Default 1 preserves the
-        # original single-message behaviour. Pass None to include all user messages
-        # in the conversation.
-        ...
+        self._init_injection(skills, registry, routing_context_turns, on_skill_error, max_manifest_skills)
+
+    async def on_start(self, context, agent) -> None:
+        _get_run_state()  # prime RunState in parent task before asyncio.gather
 
     async def on_llm_start(self, context, agent, system_prompt, input_items) -> None:
-        base = self._registry.get_always_on() if self._registry else self._skills
-        routing_ctx = _extract_routing_context(input_items, turns=self._routing_context_turns)
-        routed = await self._registry.select_for_message(routing_ctx) if self._registry else []
-        all_blocks: list = []
-        for skill in _deduplicate([*base, *routed]):
-            if not skill.is_enabled():
-                continue  # final gate — applies regardless of how the skill arrived
-            blocks = await skill.get_prompt_blocks()
-            all_blocks.extend(blocks)
-        input_items[0:0] = all_blocks  # single prepend — preserves registration order
+        await self._do_llm_start(input_items)
+
+    async def on_llm_end(self, context, agent, response) -> None:
+        self._clear_injection_state()  # reset guard so skills re-inject next turn
 ```
 
 **`routing_context_turns` — multi-turn routing context.** The accepted v1 limitation
@@ -486,7 +522,6 @@ from dataclasses import dataclass, field
 class RunState:
     manifest_injected: bool = False
     injected_this_call: set[str] = field(default_factory=set)
-    pending_skills: list[Skill] = field(default_factory=list)
     invoke_skill_calls: int = 0
 
 _run_state: ContextVar[RunState | None] = ContextVar("_run_state", default=None)
@@ -501,7 +536,7 @@ def _get_run_state() -> RunState:
 
 Every hook method calls `_get_run_state()` to access or mutate the current run's
 state. One pattern, one place to look, one class to test. `RunState` and `_run_state`
-are defined in `hooks.py` (or a private `_state.py` — see Module Layout).
+are defined in `_state.py` (see Module Layout).
 
 The `ContextVar` is scoped to the async task — each `Runner.run()` call runs in its
 own task and starts with a fresh `RunState`. No explicit cleanup is needed and
@@ -641,22 +676,40 @@ result = await Runner.run(
 registered in both a `RunSkillHooks` and a per-agent `SkillHooks`, it will inject twice.
 To prevent this, both hook classes use `_get_run_state().injected_this_call` — a
 `set[str]` inside `RunState` that tracks which skill names have already been injected
-for the current call. Before injecting a skill, its `name` is checked against the set;
-if present it is skipped; otherwise the name is added and injection proceeds.
+for the current LLM call. Before injecting a skill, its `name` is checked against the
+set; if present it is skipped; otherwise the name is added and injection proceeds.
 
 `RunState` is scoped to the current async task via its `ContextVar`, so the guard is
 automatically task-local — concurrent runs cannot interfere with each other and no
 `finally` cleanup is needed.
 
+**Re-injection on every turn.** The guard is intentionally per-call, not per-run.
+`on_llm_end` clears `injected_this_call` after each LLM response so that skills
+re-inject on the next turn's `on_llm_start`. Skills injected on turn N are ephemeral
+— they are prepended to `filtered.input` for that call only and are not saved into the
+permanent conversation history. Without clearing, skills would silently stop injecting
+after the first turn in any multi-turn agent.
+
 ```python
 async def on_llm_start(self, context, agent, system_prompt, input_items) -> None:
     seen = _get_run_state().injected_this_call
-    # skip any skill whose name is already in `seen`; add before injecting
+    # seen is cleared each turn by on_llm_end; add name before injecting
     ...
+
+async def on_llm_end(self, context, agent, response) -> None:
+    _get_run_state().injected_this_call.clear()
 ```
 
+**Error resilience in `_collect_blocks`.** If `get_prompt_blocks()` raises, the
+skill's name is removed from `seen` (via `seen.discard`) so the skill gets a fresh
+attempt on the next turn rather than being permanently suppressed for the rest of the
+run. The name is still added to `seen` _before_ the `await` (concurrent-guard
+semantics are preserved); removal only happens in the `except` branch.
+
 Tests must cover: same skill registered in both `RunSkillHooks` and `SkillHooks` injects
-only once; two _different_ skills registered separately each inject once.
+only once per LLM call (concurrent `asyncio.gather` variant); two _different_ skills
+registered separately each inject once; skill re-injects on turn 2 after `on_llm_end`
+clears the guard; skill does not re-inject when `on_llm_end` is never called.
 
 ### New modules
 

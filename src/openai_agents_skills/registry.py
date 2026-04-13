@@ -50,7 +50,17 @@ class SkillRegistry:
 
         Args:
             skill: The skill instance to register.
+
+        Raises:
+            ValueError: If the skill's ``name`` attribute is empty or whitespace-only.
+                Every registered skill must have a non-empty name because the registry
+                uses ``name`` as its primary key.
         """
+        if not skill.name or not skill.name.strip():
+            raise ValueError(
+                f"{type(skill).__name__!r} has an empty or whitespace-only name. "
+                "Set the 'name' class attribute to a non-empty string before registering."
+            )
         self._skills[skill.name] = skill
 
     def unregister(self, name: str) -> None:
@@ -83,6 +93,11 @@ class SkillRegistry:
     def skill_names(self) -> list[str]:
         """Sorted list of all registered skill names."""
         return sorted(self._skills.keys())
+
+    @property
+    def all_skills(self) -> list[Skill]:
+        """All registered skills in registration order."""
+        return list(self._skills.values())
 
     def get_always_on(self) -> list[Skill]:
         """Return skills that should always be injected regardless of the message.
@@ -118,7 +133,7 @@ class SkillRegistry:
         """
         if self._router is None:
             return []
-        routable = [s for s in self._skills.values() if s.when_to_use]
+        routable = [s for s in self._skills.values() if s.when_to_use and s.is_enabled()]
         if not routable:
             return []
         names = await self._router.select(message, routable)
