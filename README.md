@@ -200,7 +200,6 @@ registry.register(make_summariser())
 | **3 — File skills** | ✅ Complete | `FileSkill`, SKILL.md loading, YAML frontmatter, argument substitution   |
 | **4 — Advanced**    | 🟡 Planned  | Tool-result triggers, post-turn skills                                   |
 | **5 — Hardening**   | 🟡 Planned  | Source trust levels, path validation, `allowed-tools` enforcement        |
-| **6 — Forked**      | 🟡 Planned  | `context: fork` — isolated sub-agent execution                           |
 
 See [docs/PLAN.md](docs/PLAN.md) for the full phased plan.
 

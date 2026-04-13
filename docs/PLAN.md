@@ -14,9 +14,8 @@
 6. [Phase 3 — File-Based Skills](#phase-3--file-based-skills)
 7. [Phase 4 — Advanced Triggering](#phase-4--advanced-triggering)
 8. [Phase 5 — Security Hardening](#phase-5--security-hardening)
-9. [Phase 6 — Forked Sub-agents (Planned)](#phase-6--forked-sub-agents-planned)
-10. [Module Layout](#module-layout)
-11. [Delivery Summary](#delivery-summary)
+9. [Module Layout](#module-layout)
+10. [Delivery Summary](#delivery-summary)
 
 ---
 
@@ -1121,13 +1120,6 @@ Trust level is stored on `FileSkill` and surfaced in log output. Phase 5 defines
 following concrete enforcement rules:
 
 - `allowed-tools` declarations are honoured for all trust levels.
-- `context: fork` enforcement is deferred to Phase 6, when the forked sub-agent design
-  is finalised.
-- Future: `EXTRA` skills may be restricted from using `context: fork` in a hardened
-  deployment mode (opt-in via `SkillConfig(restrict_extra_fork=True)`). This will be
-  addressed in Phase 6. If fork enforcement requirements do not materialise before
-  Phase 6 ships, the `restrict_extra_fork` flag should be dropped and this section
-  trimmed to just logging.
 
 ### Path traversal validation
 
@@ -1142,10 +1134,10 @@ project > extra).
 
 ### `allowed-tools` audit
 
-`allowed-tools` enforcement moves to Phase 6 (`context: fork`). Phase 5 adds a
-static audit: warn if a skill declares an `allowed-tools` entry that does not match
-any tool registered on the agent. This surfaces configuration drift (e.g. a tool was
-renamed or removed) before the agent runs.
+`allowed-tools` is informational — surfaced in the manifest for the model's benefit.
+Phase 5 adds a static audit: warn if a skill declares an `allowed-tools` entry that
+does not match any tool registered on the agent. This surfaces configuration drift
+(e.g. a tool was renamed or removed) before the agent runs.
 
 The audit is triggered explicitly by the caller after constructing both the registry
 and the agent, since the registry is built independently of any agent:
@@ -1172,17 +1164,6 @@ a name not present in `agent_tools`. It does not raise — the agent continues t
 
 ---
 
-## Phase 6 — Forked Sub-agents (Planned)
-
-**Phase 6 — Forked Sub-agents** (Planned)
-
-Skills with `context: fork` run in an isolated `Runner.run()` call. The injection
-mechanism for returning the fork result to the parent conversation must be resolved
-before this phase is designed in detail. Candidates: user-role message, synthetic
-tool-call pair, or `on_llm_end` post-turn injection.
-
----
-
 ## Module Layout
 
 ```
@@ -1195,11 +1176,8 @@ src/openai_agents_skills/
     _state.py            # RunState, _run_state, _get_run_state() — private     ✅ Phase 2
     registry.py          # SkillRegistry — routing, tool triggers               ✅ Phase 2 / Phase 4
     router.py            # SkillRouter protocol, LLMSkillRouter                 ✅ Phase 2
-    loader.py            # load_skills_from_dir, load_all_skills, dedup         Phase 3
-    substitution.py      # substitute_args, substitute_vars                     Phase 3
-    bundled/
-        __init__.py      # register_bundled_skills()
-        # concrete Skill subclasses added as needed
+    loader.py            # load_skills_from_dir, load_all_skills, dedup         ✅ Phase 3
+    substitution.py      # substitute_args, substitute_vars                     ✅ Phase 3
 
 tests/
     __init__.py
@@ -1210,9 +1188,9 @@ tests/
     test_registry.py     # SkillRegistry routing, tool triggers                 ✅ Phase 2 / Phase 4
     test_router.py       # LLMSkillRouter, SkillRouter protocol                 ✅ Phase 2
     test_phase2_hooks.py # routing, manifest, dedup, error resilience, invoke   ✅ Phase 2
-    test_loader.py       # SKILL.md loading, dedup, priority                    Phase 3
-    test_substitution.py # argument and variable substitution                   Phase 3
-    test_advanced.py     # tool-result triggers, post-turn skills               Phase 4
+    test_loader.py       # SKILL.md loading, dedup, priority                    ✅ Phase 3
+    test_substitution.py # argument and variable substitution                   ✅ Phase 3
+    test_advanced.py     # tool-result triggers, post-turn skills               ✅ Phase 4
     fixtures/
         .agent/
             skills/
@@ -1231,4 +1209,3 @@ tests/
 | **3 — File skills**         | ✅ Complete | SKILL.md loading, frontmatter parsing, arg substitution, user + project dirs       | —                                      |
 | **4 — Advanced triggering** | ✅ Complete | Tool-result triggers, post-turn skills                                             | `AgentHooks.on_tool_end`, `on_llm_end` |
 | **5 — Hardening**           | 🟡 Planned  | Source trust levels, `allowed-tools` audit, full docs                              | —                                      |
-| **6 — Forked sub-agents**   | 🟡 Planned  | `context: fork` — isolated sub-agent execution                                     | `Runner.run()` (nested)                |
