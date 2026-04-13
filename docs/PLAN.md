@@ -1,6 +1,6 @@
 # openai-agents-skills: Implementation Plan
 
-> **Status:** Phase 1 complete — Phase 2 next
+> **Status:** Phase 2 complete ✅ — Phase 3 next
 
 ---
 
@@ -173,7 +173,7 @@ agent = Agent(
 
 ---
 
-## Phase 2 — Registry & Routing
+## Phase 2 — Registry & Routing ✅
 
 **Goal:** Skills are selected dynamically per-turn based on trigger conditions.
 Introduce `SkillRegistry` — a routing layer that decides which skills fire and when.
@@ -1162,9 +1162,9 @@ src/openai_agents_skills/
     py.typed
     skills.py            # Skill — abstract base class                          ✅ Phase 1
     hooks.py             # SkillHooks, RunSkillHooks — injection engine         ✅ Phase 1 / Phase 2
-    _state.py            # RunState, _run_state, _get_run_state() — private     Phase 2
-    registry.py          # SkillRegistry — routing, tool triggers               Phase 2 / Phase 4
-    router.py            # SkillRouter protocol, LLMSkillRouter                 Phase 2
+    _state.py            # RunState, _run_state, _get_run_state() — private     ✅ Phase 2
+    registry.py          # SkillRegistry — routing, tool triggers               ✅ Phase 2 / Phase 4
+    router.py            # SkillRouter protocol, LLMSkillRouter                 ✅ Phase 2
     loader.py            # load_skills_from_dir, load_all_skills, dedup         Phase 3
     substitution.py      # substitute_args, substitute_vars                     Phase 3
     bundled/
@@ -1173,11 +1173,13 @@ src/openai_agents_skills/
 
 tests/
     __init__.py
+    conftest.py          # reset_run_state autouse fixture                      ✅ Phase 2
     test_version.py
     test_skills.py       # Skill (ABC), is_enabled gate                         ✅ Phase 1
     test_hooks.py        # SkillHooks injection                                 ✅ Phase 1
-    test_registry.py     # SkillRegistry routing, tool triggers                 Phase 2 / Phase 4
-    test_router.py       # LLMSkillRouter, SkillRouter protocol                 Phase 2
+    test_registry.py     # SkillRegistry routing, tool triggers                 ✅ Phase 2 / Phase 4
+    test_router.py       # LLMSkillRouter, SkillRouter protocol                 ✅ Phase 2
+    test_phase2_hooks.py # routing, manifest, dedup, error resilience, invoke   ✅ Phase 2
     test_loader.py       # SKILL.md loading, dedup, priority                    Phase 3
     test_substitution.py # argument and variable substitution                   Phase 3
     test_advanced.py     # tool-result triggers, post-turn skills               Phase 4
@@ -1195,7 +1197,7 @@ tests/
 | Phase                       | Status      | What ships                                                                         | Key SDK surface                        |
 | --------------------------- | ----------- | ---------------------------------------------------------------------------------- | -------------------------------------- |
 | **1 — Proto**               | ✅ Complete | `Skill`, `SkillHooks`, always-on injection                                         | `AgentHooks.on_llm_start`              |
-| **2 — Routing**             | 🟡 Planned  | `SkillRegistry`, `when_to_use` matching, manifest, `invoke_skill`, `RunSkillHooks` | `AgentHooks.on_start`, `RunHooks`      |
+| **2 — Routing**             | ✅ Complete | `SkillRegistry`, `when_to_use` matching, manifest, `invoke_skill`, `RunSkillHooks` | `AgentHooks.on_start`, `RunHooks`      |
 | **3 — File skills**         | 🟡 Planned  | SKILL.md loading, frontmatter parsing, arg substitution, user + project dirs       | —                                      |
 | **4 — Advanced triggering** | 🟡 Planned  | Tool-result triggers, post-turn skills                                             | `AgentHooks.on_tool_end`, `on_llm_end` |
 | **5 — Hardening**           | 🟡 Planned  | Source trust levels, `allowed-tools` audit, full docs                              | —                                      |

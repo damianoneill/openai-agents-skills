@@ -17,8 +17,10 @@ class _AlwaysOnSkill(Skill):
     name = "always_on"
     description = "Always injects."
 
-    def __init__(self, content: str = "injected") -> None:
+    def __init__(self, content: str = "injected", name_override: str | None = None) -> None:
         self._content = content
+        if name_override is not None:
+            self.name = name_override
 
     async def get_prompt_blocks(self, args: str = "") -> list[Any]:
         return [{"role": "user", "content": self._content}]
@@ -120,9 +122,9 @@ class TestSkillHooksOrdering:
     async def test_multiple_skills_inject_in_registration_order(self) -> None:
         hooks = SkillHooks(
             [
-                _AlwaysOnSkill("first"),
-                _AlwaysOnSkill("second"),
-                _AlwaysOnSkill("third"),
+                _AlwaysOnSkill("first", name_override="skill_first"),
+                _AlwaysOnSkill("second", name_override="skill_second"),
+                _AlwaysOnSkill("third", name_override="skill_third"),
             ]
         )
         items: list[Any] = []
@@ -135,7 +137,12 @@ class TestSkillHooksOrdering:
     async def test_skill_blocks_precede_original_items_after_multi_skill_injection(
         self,
     ) -> None:
-        hooks = SkillHooks([_AlwaysOnSkill("a"), _AlwaysOnSkill("b")])
+        hooks = SkillHooks(
+            [
+                _AlwaysOnSkill("a", name_override="skill_a"),
+                _AlwaysOnSkill("b", name_override="skill_b"),
+            ]
+        )
         items: list[Any] = [{"role": "user", "content": "original"}]
 
         await _fire(hooks, items)
