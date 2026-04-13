@@ -282,7 +282,7 @@ User: "My BGP session to 10.1.1.1 keeps flapping... [log output]"
 ├─ on_llm_end   → injected_this_call cleared ✦ skills will re-inject on next call
 │
 ├─ on_tool_start  → run_show_command("show bgp neighbor 10.1.1.1")
-├─ on_tool_end    → result appended to input_items
+├─ on_tool_end    → result appended to input_items (also queues any skills whose triggers_after_tools matches)
 │
 ├─ on_llm_start (post-tool)
 │   ├─ Always-on:  [escalation-policy]
@@ -317,12 +317,12 @@ while still delivering the guidance exactly when it is needed.
 
 ---
 
-## Phase 4 Extension: Tool-Result Triggers
+## Tool-Result Triggers
 
-In Phase 4, `SkillHooks.on_tool_end` can queue skills based on _which tool just ran_,
-giving even finer-grained control than message routing alone. Skills declare the tools
-that should trigger them via a class attribute; `SkillHooks` handles all queuing and
-drains the pending list at the next `on_llm_start`:
+`SkillHooks.on_tool_end` queues skills based on _which tool just ran_, giving even
+finer-grained control than message routing alone. Skills declare the tools that should
+trigger them via a class attribute; `SkillHooks` handles all queuing and drains the
+pending list at the next `on_llm_start`:
 
 ```python
 class LogParserSkill(Skill):
