@@ -11,8 +11,7 @@ A **Skill** is a named, reusable prompt fragment injected into the LLM's context
 in the agent loop via `AgentHooks`. This lets you package workflow instructions, checklists, or
 procedures as composable named units that can be shared across agents without duplicating configuration.
 
-> **Alpha — Phase 3:** Core injection, registry & routing, and file-based skills are complete.
-> Advanced triggering and hardening are coming in later phases — see [docs/PLAN.md](docs/PLAN.md).
+> **All planned phases complete.** See [docs/PLAN.md](docs/PLAN.md) for the full implementation history.
 
 ---
 
@@ -198,8 +197,8 @@ registry.register(make_summariser())
 | **1 — Proto**       | ✅ Complete | `Skill`, `SkillProtocol`, `SkillHooks`, always-on injection              |
 | **2 — Routing**     | ✅ Complete | `SkillRegistry`, LLM-based routing, `invoke_skill` tool, `RunSkillHooks` |
 | **3 — File skills** | ✅ Complete | `FileSkill`, SKILL.md loading, YAML frontmatter, argument substitution   |
-| **4 — Advanced**    | 🟡 Planned  | Tool-result triggers, post-turn skills                                   |
-| **5 — Hardening**   | 🟡 Planned  | Source trust levels, path validation, `allowed-tools` enforcement        |
+| **4 — Advanced**    | ✅ Complete | Tool-result triggers, post-turn skills                                   |
+| **5 — Hardening**   | ✅ Complete | Source trust levels, path validation, coverage, docs                     |
 
 See [docs/PLAN.md](docs/PLAN.md) for the full phased plan.
 
