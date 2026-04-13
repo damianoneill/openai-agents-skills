@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
-from openai_agents_skills import Skill, SkillHooks, SkillProtocol
-
+from openai_agents_skills import Skill, SkillHooks
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -51,16 +48,6 @@ class _MultiBlockSkill(Skill):
             {"role": "user", "content": "block one"},
             {"role": "user", "content": "block two"},
         ]
-
-
-class _DuckSkill:
-    """Duck-typed skill that satisfies SkillProtocol without subclassing Skill."""
-
-    name = "duck"
-    description = "Duck-typed skill."
-
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
-        return [{"role": "user", "content": "quack"}]
 
 
 async def _fire(hooks: SkillHooks, input_items: list[Any]) -> None:
@@ -216,28 +203,3 @@ class TestDisabledSkills:
         await _fire(hooks, items)
 
         assert items == [{"role": "user", "content": "original"}]
-
-
-# ---------------------------------------------------------------------------
-# Protocol conformance
-# ---------------------------------------------------------------------------
-
-
-class TestSkillHooksProtocol:
-    async def test_duck_typed_skill_is_accepted(self) -> None:
-        assert isinstance(_DuckSkill(), SkillProtocol)
-        hooks = SkillHooks([_DuckSkill()])  # type: ignore[list-item]
-        items: list[Any] = []
-
-        await _fire(hooks, items)
-
-        assert items[0]["content"] == "quack"
-
-    async def test_duck_typed_skill_is_not_gated_by_is_enabled(self) -> None:
-        """Duck-typed skills have no is_enabled(); they always inject."""
-        hooks = SkillHooks([_DuckSkill()])  # type: ignore[list-item]
-        items: list[Any] = []
-
-        await _fire(hooks, items)
-
-        assert len(items) == 1

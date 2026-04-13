@@ -1,4 +1,4 @@
-"""Tests for Skill base class, SkillProtocol, and @skill_factory decorator."""
+"""Tests for Skill base class."""
 
 from __future__ import annotations
 
@@ -6,41 +6,68 @@ from typing import Any
 
 import pytest
 
-from openai_agents_skills import Skill, SkillProtocol, skill_factory
+from openai_agents_skills import Skill
 
 # ---------------------------------------------------------------------------
-# Skill base class
+# Minimal concrete implementation used to test class-level defaults
+# ---------------------------------------------------------------------------
+
+
+class _MinimalSkill(Skill):
+    """Smallest valid Skill subclass — used only to test inherited defaults."""
+
+    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Skill base class — abstract enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestSkillAbstract:
+    def test_skill_base_class_cannot_be_instantiated(self) -> None:
+        with pytest.raises(TypeError):
+            Skill()  # type: ignore[abstract]
+
+    def test_subclass_without_get_prompt_blocks_cannot_be_instantiated(self) -> None:
+        class IncompleteSkill(Skill):
+            pass
+
+        with pytest.raises(TypeError):
+            IncompleteSkill()  # type: ignore[abstract]
+
+    def test_subclass_with_get_prompt_blocks_can_be_instantiated(self) -> None:
+        sk = _MinimalSkill()
+        assert sk is not None
+
+
+# ---------------------------------------------------------------------------
+# Skill base class — defaults
 # ---------------------------------------------------------------------------
 
 
 class TestSkillDefaults:
     def test_name_default_is_empty_string(self) -> None:
-        sk = Skill()
+        sk = _MinimalSkill()
         assert sk.name == ""
 
     def test_description_default_is_empty_string(self) -> None:
-        sk = Skill()
+        sk = _MinimalSkill()
         assert sk.description == ""
 
     def test_when_to_use_default_is_empty_string(self) -> None:
-        sk = Skill()
+        sk = _MinimalSkill()
         assert sk.when_to_use == ""
 
     def test_is_enabled_defaults_to_true(self) -> None:
-        sk = Skill()
+        sk = _MinimalSkill()
         assert sk.is_enabled() is True
 
-    async def test_get_prompt_blocks_raises_not_implemented(self) -> None:
-        sk = Skill()
-        with pytest.raises(NotImplementedError):
-            await sk.get_prompt_blocks()
 
-    async def test_not_implemented_error_names_subclass(self) -> None:
-        class MySkill(Skill):
-            pass
-
-        with pytest.raises(NotImplementedError, match="MySkill"):
-            await MySkill().get_prompt_blocks()
+# ---------------------------------------------------------------------------
+# Skill subclasses
+# ---------------------------------------------------------------------------
 
 
 class TestSkillSubclass:
@@ -114,6 +141,9 @@ class TestSkillSubclass:
             def is_enabled(self) -> bool:
                 return False
 
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                return []
+
         assert DisabledSkill().is_enabled() is False
 
     def test_is_enabled_can_be_dynamic(self) -> None:
@@ -127,6 +157,9 @@ class TestSkillSubclass:
             def is_enabled(self) -> bool:
                 return self._active
 
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                return []
+
         assert ToggleSkill(active=True).is_enabled() is True
         assert ToggleSkill(active=False).is_enabled() is False
 
@@ -136,123 +169,10 @@ class TestSkillSubclass:
             description = "My description."
             when_to_use = "Use when you need my_skill."
 
+            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+                return []
+
         sk = NamedSkill()
         assert sk.name == "my_skill"
         assert sk.description == "My description."
         assert sk.when_to_use == "Use when you need my_skill."
-
-
-# ---------------------------------------------------------------------------
-# SkillProtocol
-# ---------------------------------------------------------------------------
-
-
-class TestSkillProtocol:
-    def test_skill_subclass_satisfies_protocol(self) -> None:
-        class ConcreteSkill(Skill):
-            name = "concrete"
-            description = "Concrete skill."
-
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
-                return []
-
-        assert isinstance(ConcreteSkill(), SkillProtocol)
-
-    def test_duck_typed_object_satisfies_protocol(self) -> None:
-        class DuckSkill:
-            name = "duck"
-            description = "Duck-typed skill."
-
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
-                return []
-
-        assert isinstance(DuckSkill(), SkillProtocol)
-
-    def test_object_missing_name_does_not_satisfy_protocol(self) -> None:
-        class NoName:
-            description = "missing name attribute"
-
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
-                return []
-
-        assert not isinstance(NoName(), SkillProtocol)
-
-    def test_object_missing_description_does_not_satisfy_protocol(self) -> None:
-        class NoDescription:
-            name = "no_desc"
-
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
-                return []
-
-        assert not isinstance(NoDescription(), SkillProtocol)
-
-    def test_object_missing_get_prompt_blocks_does_not_satisfy_protocol(self) -> None:
-        class NoMethod:
-            name = "no_method"
-            description = "missing method"
-
-        assert not isinstance(NoMethod(), SkillProtocol)
-
-    def test_base_skill_satisfies_protocol(self) -> None:
-        assert isinstance(Skill(), SkillProtocol)
-
-
-# ---------------------------------------------------------------------------
-# @skill_factory decorator
-# ---------------------------------------------------------------------------
-
-
-class TestSkillDecorator:
-    def test_decorator_attaches_skill_name(self) -> None:
-        @skill_factory(name="my_skill")
-        def factory() -> Skill:
-            return Skill()
-
-        assert factory.__skill_name__ == "my_skill"
-
-    def test_decorator_attaches_description(self) -> None:
-        @skill_factory(name="sk", description="A useful skill.")
-        def factory() -> Skill:
-            return Skill()
-
-        assert factory.__skill_description__ == "A useful skill."
-
-    def test_decorator_default_description_is_empty_string(self) -> None:
-        @skill_factory(name="sk")
-        def factory() -> Skill:
-            return Skill()
-
-        assert factory.__skill_description__ == ""
-
-    def test_decorated_factory_remains_callable(self) -> None:
-        class ConcreteSkill(Skill):
-            name = "concrete"
-            description = "Concrete."
-
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
-                return []
-
-        @skill_factory(name="concrete", description="Concrete.")
-        def factory() -> Skill:
-            return ConcreteSkill()
-
-        result = factory()
-        assert isinstance(result, Skill)
-
-    def test_decorator_does_not_call_the_factory(self) -> None:
-        call_count = 0
-
-        @skill_factory(name="lazy")
-        def factory() -> Skill:
-            nonlocal call_count
-            call_count += 1
-            return Skill()
-
-        assert call_count == 0
-
-    def test_decorator_preserves_function_identity(self) -> None:
-        def factory() -> Skill:
-            return Skill()
-
-        decorated = skill_factory(name="sk")(factory)
-        assert decorated is factory

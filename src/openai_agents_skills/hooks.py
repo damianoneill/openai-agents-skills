@@ -28,11 +28,11 @@ Usage::
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from agents import Agent, AgentHooks, RunContextWrapper
 
-from .skills import Skill, SkillProtocol
+from .skills import Skill
 
 
 class SkillHooks(AgentHooks):
@@ -44,10 +44,7 @@ class SkillHooks(AgentHooks):
     in registration order so the first skill in the list ends up closest to the
     top of the conversation.
 
-    Skills that are ``Skill`` subclass instances and whose ``is_enabled()``
-    returns ``False`` are silently skipped.  Any object that satisfies
-    :class:`~openai_agents_skills.SkillProtocol` is accepted, including
-    duck-typed classes that do not inherit from :class:`~openai_agents_skills.Skill`.
+    Skills whose ``is_enabled()`` returns ``False`` are silently skipped.
 
     Example::
 
@@ -60,21 +57,21 @@ class SkillHooks(AgentHooks):
         )
     """
 
-    def __init__(self, skills: list[SkillProtocol]) -> None:
+    def __init__(self, skills: list[Skill]) -> None:
         """Initialise with a list of skills to inject before each LLM call.
 
         Args:
-            skills: Skills to inject.  Must satisfy :class:`SkillProtocol`.
-                    :class:`Skill` subclasses whose ``is_enabled()`` returns
-                    ``False`` at call time are skipped automatically.
+            skills: Skills to inject.  Must be :class:`Skill` subclass instances.
+                    Skills whose ``is_enabled()`` returns ``False`` at call time
+                    are skipped automatically.
         """
-        self._skills: list[SkillProtocol] = list(skills)
+        self._skills: list[Skill] = list(skills)
 
     async def on_llm_start(
         self,
         context: RunContextWrapper[Any],
         agent: Agent[Any],
-        system_prompt: Optional[str],
+        system_prompt: str | None,
         input_items: list[Any],
     ) -> None:
         """Prepend skill prompt blocks to ``input_items`` before the LLM is called.
@@ -97,7 +94,7 @@ class SkillHooks(AgentHooks):
         """
         all_blocks: list[Any] = []
         for skill in self._skills:
-            if isinstance(skill, Skill) and not skill.is_enabled():
+            if not skill.is_enabled():
                 continue
             blocks = await skill.get_prompt_blocks()
             all_blocks.extend(blocks)

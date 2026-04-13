@@ -14,8 +14,9 @@
 6. [Phase 3 — File-Based Skills](#phase-3--file-based-skills)
 7. [Phase 4 — Advanced Triggering](#phase-4--advanced-triggering)
 8. [Phase 5 — Security Hardening](#phase-5--security-hardening)
-9. [Module Layout](#module-layout)
-10. [Delivery Summary](#delivery-summary)
+9. [Phase 6 — Forked Sub-agents (Planned)](#phase-6--forked-sub-agents-planned)
+10. [Module Layout](#module-layout)
+11. [Delivery Summary](#delivery-summary)
 
 ---
 
@@ -128,13 +129,18 @@ runs — no special-casing is needed.
 ### Public API
 
 ```python
-from openai_agents_skills import Skill, SkillProtocol, SkillHooks, skill_factory
+from openai_agents_skills import Skill, SkillHooks
 ```
 
-### `Skill` — base class
+### `Skill` — abstract base class
+
+`Skill` is an abstract base class. Concrete skills must subclass it and implement
+`get_prompt_blocks`.
 
 ```python
-class Skill:
+from abc import ABC, abstractmethod
+
+class Skill(ABC):
     name: str = ""
     description: str = ""
     when_to_use: str = ""           # used by Phase 2 routing
@@ -142,14 +148,10 @@ class Skill:
     def is_enabled(self) -> bool:   # override to gate dynamically
         return True
 
+    @abstractmethod
     async def get_prompt_blocks(self, args: str = "") -> list:
-        raise NotImplementedError
+        ...
 ```
-
-### `SkillProtocol` — structural typing
-
-Any object with `name`, `description`, and `get_prompt_blocks` satisfies the protocol.
-Subclassing `Skill` is not required.
 
 ### `SkillHooks` — the injection engine
 
@@ -164,31 +166,10 @@ agent = Agent(
 - Subclasses `AgentHooks`
 - Prepends all enabled skills' blocks at `on_llm_start`
 - `Skill` subclasses with `is_enabled() == False` are silently skipped
-- Duck-typed objects satisfying `SkillProtocol` are always injected
 
-### `@skill_factory` decorator
-
-Lightweight factory annotation that attaches skill metadata to a factory function.
-Does not call or register the factory.
-
-```python
-@skill_factory(name="summariser", description="Summarise long documents.")
-def make_summariser() -> Skill:
-    return MySummariserSkill()
-```
-
-The decorator exists to support future static-analysis tooling and package-level skill
-discovery (e.g. scanning a module for decorated factories without instantiating them).
-No Phase 2 feature consumes the decorator output at runtime — `SkillRegistry.register`
-accepts `Skill` instances, not factories. The decorator's concrete runtime role is
-deferred to Phase 3+ when file-based and package-based skill discovery is designed.
-
-The public docstring must be explicit — it is a **forward-looking marker**, not a
-registration mechanism. Callers from Flask/FastAPI or `@function_tool` backgrounds
-will intuitively expect a decorator to register something. The docstring should read:
-"Attaches skill metadata to a factory function for future tooling discovery. Has no
-runtime effect in the current version — call the factory and pass the result to
-`SkillRegistry.register` to register a skill."
+> A `@skill_factory` decorator for static-analysis tooling and package-level discovery
+> is planned for a future phase. It is not included in Phase 1 to avoid shipping a
+> runtime-no-op public API.
 
 ---
 
@@ -238,13 +219,14 @@ class SkillRouter(Protocol):
     async def select(
         self,
         message: str,
-        skills: list[SkillProtocol],
+        skills: list[Skill],
     ) -> list[str]:
         """Return names of skills to activate for this message."""
         ...
 ```
 
-Any object satisfying this protocol can be injected. Two implementations ship by default.
+Any object satisfying this protocol can be injected. `LLMSkillRouter` is the default
+implementation.
 
 #### `LLMSkillRouter` — default implementation
 
@@ -259,7 +241,7 @@ class LLMSkillRouter:
         model: str = "gpt-4o-mini", # any model string the client accepts
     ) -> None: ...
 
-    async def select(self, message: str, skills: list[SkillProtocol]) -> list[str]:
+    async def select(self, message: str, skills: list[Skill]) -> list[str]:
         # Build manifest from skills
         # Call client.chat.completions.create with JSON response_format
         # Parse {"selected": [...]} and return name list
@@ -291,9 +273,9 @@ precedes the main agent call — roughly doubling per-turn latency for unique me
 `LLMSkillRouter` only when the skill library is large enough that the token savings from
 selective injection outweigh the routing overhead. A rough threshold: if the registry
 has 3–5 concise skills whose combined size is a few hundred tokens, always-on injection
-via `NullSkillRouter` (or no router) is faster and simpler. `LLMSkillRouter` pays off
-when skills are large (hundreds of tokens each) or numerous (10+), where injecting all
-of them every turn would be more expensive than one routing call.
+(or no router) is faster and simpler. `LLMSkillRouter` pays off when skills are large
+(hundreds of tokens each) or numerous (10+), where injecting all of them every turn
+would be more expensive than one routing call.
 
 **Result caching:** responses are cached by `message` string using an LRU cache with
 `maxsize=256`. Same message within the session returns cached selection without an
@@ -330,27 +312,22 @@ The `openai-agents` SDK's own LiteLLM integration (`set_litellm_model`) applies 
 to the agent's primary model. The skill router uses its own injected client, so the
 two are independent and can use different providers.
 
-#### `NullSkillRouter` — no routing
-
-Returns `[]` for every message. All skills are treated as unconditional. Useful in
-tests and when routing is not desired.
-
-```python
-class NullSkillRouter:
-    async def select(self, message: str, skills: list[SkillProtocol]) -> list[str]:
-        return []
-```
-
 #### `SkillRegistry` with router
 
-Router is optional. When omitted, `select_for_message` always returns `[]` and all
-active skills come from `get_always_on()`.
+`router=None` (the default) is the "no routing" path — `select_for_message` returns
+`[]` and all active skills come from `get_always_on()`. Pass a `SkillRouter`
+implementation to enable dynamic per-message skill selection.
 
 ```python
 class SkillRegistry:
-    def __init__(self, router: SkillRouter | None = None) -> None: ...
+    def __init__(self, router: SkillRouter | None = None) -> None:
+        """
+        router: the routing strategy to use. Pass None (default) to disable
+        routing — all skills are treated as unconditional.
+        """
+        ...
 
-    async def select_for_message(self, message: str) -> list[SkillProtocol]:
+    async def select_for_message(self, message: str) -> list[Skill]:
         if self._router is None:
             return []
         names = await self._router.select(message, list(self._skills.values()))
@@ -409,9 +386,9 @@ which skills to fire alongside the always-on unconditional set.
 class SkillHooks(AgentHooks):
     def __init__(
         self,
-        skills: list[SkillProtocol] | None = None,
+        skills: list[Skill] | None = None,
         registry: SkillRegistry | None = None,
-        routing_context_turns: int = 1,
+        routing_context_turns: int | None = 1,
     ) -> None:
         # When both are provided, `skills` are treated as additional unconditional
         # skills merged with registry.get_always_on(). Registry routing applies on top.
@@ -419,7 +396,8 @@ class SkillHooks(AgentHooks):
         #
         # routing_context_turns controls how many recent user messages are collected
         # and joined into the routing context string. Default 1 preserves the
-        # original single-message behaviour.
+        # original single-message behaviour. Pass None to include all user messages
+        # in the conversation.
         ...
 
     async def on_llm_start(self, context, agent, system_prompt, input_items) -> None:
@@ -428,7 +406,7 @@ class SkillHooks(AgentHooks):
         routed = await self._registry.select_for_message(routing_ctx) if self._registry else []
         all_blocks: list = []
         for skill in _deduplicate([*base, *routed]):
-            if hasattr(skill, "is_enabled") and not skill.is_enabled():
+            if not skill.is_enabled():
                 continue  # final gate — applies regardless of how the skill arrived
             blocks = await skill.get_prompt_blocks()
             all_blocks.extend(blocks)
@@ -442,14 +420,19 @@ class SkillHooks(AgentHooks):
 enough conversational signal to select the right skills mid-workflow.
 
 ```python
-def _extract_routing_context(input_items: list, turns: int = 1) -> str:
-    """Return the last `turns` user messages joined by ' | ', newest last."""
+def _extract_routing_context(input_items: list, turns: int | None = 1) -> str:
+    """Return the last `turns` user messages joined by ' | ', newest last.
+
+    Pass None to include all user messages in the conversation (use only for
+    short sessions — the context string grows unboundedly and LRU caching
+    will not help).
+    """
     user_texts = [
         item["content"]
         for item in input_items
         if isinstance(item, dict) and item.get("role") == "user"
     ]
-    recent = user_texts[-turns:] if turns > 0 else user_texts
+    recent = user_texts[-turns:] if turns is not None else user_texts
     return " | ".join(recent)
 ```
 
@@ -463,9 +446,9 @@ works correctly:
 | 3    | `"Let's work through the BGP troubleshooting workflow \| Run the show command \| What does that output mean?"` | `bgp-troubleshooting`, `log-parser` ✅ |
 
 **Default value.** `routing_context_turns=1` preserves the existing single-message
-behaviour so callers that do not set this parameter are unaffected. Setting it to `0`
-passes all user messages in the conversation, which is appropriate for very short
-sessions but may become expensive in long ones.
+behaviour so callers that do not set this parameter are unaffected. Setting it to
+`None` passes all user messages in the conversation, which is appropriate for very
+short sessions but may become expensive in long ones.
 
 **Interaction with the LRU cache.** `LLMSkillRouter` caches routing results keyed on
 the full context string. A multi-turn string is longer and more unique than a single
@@ -482,9 +465,7 @@ should always run" which captures both filters. The docstring makes both explici
 skills, but `select_for_message` returns skills by name from the registry without
 re-checking `is_enabled()` — a router could return a skill that became disabled between
 the router call and injection. The `on_llm_start` loop applies `is_enabled()` to every
-candidate regardless of how it arrived (always-on, routed, or pending). Duck-typed
-objects that do not implement `is_enabled` are always injected (consistent with Phase 1
-behaviour).
+candidate regardless of how it arrived (always-on, routed, or pending).
 
 ### System prompt manifest
 
@@ -492,25 +473,55 @@ On the first LLM call of each run, inject a concise manifest listing all registe
 skills and their `when_to_use` descriptions into `input_items`, so the model is aware
 of available capabilities even when automatic routing does not select them.
 
-Guarded per `Runner.run()` invocation using a `WeakSet[RunContextWrapper]`. Each
-`Runner.run()` call creates a new `RunContextWrapper` instance; `SkillHooks` injects the
-manifest only when the context object is not already in the set, then adds it. Using a
-`WeakSet` means entries are automatically removed when the context object is garbage
-collected at run end, preventing both stale-ID false-positives and unbounded set growth
-in long-lived service processes.
+Guarded per `Runner.run()` invocation using `RunState.manifest_injected`. All per-run
+state for skills is consolidated into a single `RunState` dataclass held in one
+`ContextVar`, scoped to the current async task:
 
 ```python
-import weakref
+from __future__ import annotations
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 
+@dataclass
+class RunState:
+    manifest_injected: bool = False
+    injected_this_call: set[str] = field(default_factory=set)
+    pending_skills: list[Skill] = field(default_factory=list)
+    invoke_skill_calls: int = 0
+
+_run_state: ContextVar[RunState | None] = ContextVar("_run_state", default=None)
+
+def _get_run_state() -> RunState:
+    state = _run_state.get()
+    if state is None:
+        state = RunState()
+        _run_state.set(state)
+    return state
+```
+
+Every hook method calls `_get_run_state()` to access or mutate the current run's
+state. One pattern, one place to look, one class to test. `RunState` and `_run_state`
+are defined in `hooks.py` (or a private `_state.py` — see Module Layout).
+
+The `ContextVar` is scoped to the async task — each `Runner.run()` call runs in its
+own task and starts with a fresh `RunState`. No explicit cleanup is needed and
+concurrent runs cannot interfere with each other.
+
+```python
 class SkillHooks(AgentHooks):
     def __init__(self, ...) -> None:
         ...
-        self._manifest_injected: weakref.WeakSet[RunContextWrapper] = weakref.WeakSet()
+        # Per-run tracking lives in RunState, not on the instance
 ```
 
-Note: `RunContextWrapper` does not expose a `run_id` field in the current SDK. The
-object identity of the context itself is the run identity — each `Runner.run()` call
-constructs a fresh instance.
+On `on_llm_start`, check and set `_get_run_state().manifest_injected`:
+
+```python
+state = _get_run_state()
+if not state.manifest_injected:
+    state.manifest_injected = True
+    # build and prepend the manifest block
+```
 
 ```
 ## Available Skills
@@ -552,11 +563,11 @@ the concatenated text as a tool result the model can act on.
 
 **Runaway invocation guard.** The model can call `invoke_skill` repeatedly across turns.
 `make_invoke_skill_tool` accepts an optional `max_calls_per_run: int` parameter
-(default: 10). The tool tracks invocation count per run context using a `WeakKeyDictionary`
-keyed on the `RunContextWrapper`. When the limit is exceeded the tool returns an error
-string rather than skill content: `"invoke_skill limit reached for this run"`. This
-prevents unbounded loops without crashing the agent run. Callers that need higher limits
-(or no limit) can pass `max_calls_per_run=0` to disable the guard.
+(default: 10). The tool tracks invocation count using `_get_run_state().invoke_skill_calls`.
+When the limit is exceeded the tool returns an error string rather than skill content:
+`"invoke_skill limit reached for this run"`. This prevents unbounded loops without
+crashing the agent run. Callers that need higher limits (or no limit) can pass
+`max_calls_per_run=0` to disable the guard.
 
 ### `is_enabled` gate
 
@@ -628,25 +639,18 @@ result = await Runner.run(
 **Double-injection guard.** The SDK fires both `run_hooks.on_llm_start` and
 `agent.hooks.on_llm_start` via `asyncio.gather` for every LLM call. If a skill is
 registered in both a `RunSkillHooks` and a per-agent `SkillHooks`, it will inject twice.
-To prevent this, both hook classes use a `ContextVar[set[str]]` named `_injected_this_call`
-to track which skill names have already been injected for the current call. Before
-injecting a skill, its `name` is checked against the set; if present it is skipped;
-otherwise the name is added and injection proceeds.
+To prevent this, both hook classes use `_get_run_state().injected_this_call` — a
+`set[str]` inside `RunState` that tracks which skill names have already been injected
+for the current call. Before injecting a skill, its `name` is checked against the set;
+if present it is skipped; otherwise the name is added and injection proceeds.
 
-Using `ContextVar` eliminates global mutable state — the variable is scoped to the
-current async task and naturally cleaned up when the task ends, so no `finally` cleanup
-is needed and concurrent tests cannot interfere with each other.
+`RunState` is scoped to the current async task via its `ContextVar`, so the guard is
+automatically task-local — concurrent runs cannot interfere with each other and no
+`finally` cleanup is needed.
 
 ```python
-from contextvars import ContextVar
-
-_injected_this_call: ContextVar[set[str]] = ContextVar("_injected_this_call", default=None)
-
 async def on_llm_start(self, context, agent, system_prompt, input_items) -> None:
-    seen = _injected_this_call.get()
-    if seen is None:
-        seen = set()
-        _injected_this_call.set(seen)
+    seen = _get_run_state().injected_this_call
     # skip any skill whose name is already in `seen`; add before injecting
     ...
 ```
@@ -657,13 +661,12 @@ only once; two _different_ skills registered separately each inject once.
 ### New modules
 
 `src/openai_agents_skills/registry.py` — `SkillRegistry`.
-`src/openai_agents_skills/router.py` — `SkillRouter` protocol, `LLMSkillRouter`, `NullSkillRouter`.
+`src/openai_agents_skills/router.py` — `SkillRouter` protocol, `LLMSkillRouter`.
 
 ### Tests for Phase 2
 
 - Registry: register / get / unregister, duplicate name overwrite, `skill_names` sorted
 - `get_always_on` excludes skills where `is_enabled()` returns `False`
-- `NullSkillRouter.select` always returns `[]`
 - `LLMSkillRouter.select` calls client with correct prompt and parses `{"selected": [...]}` response
 - `LLMSkillRouter.select` returns `[]` and logs warning on client error (no crash)
 - `LLMSkillRouter` caches: second call with same message skips client call
@@ -674,7 +677,7 @@ only once; two _different_ skills registered separately each inject once.
 - `SkillHooks` with registry injects unconditional + routed skills
 - `SkillHooks` deduplicates when skill appears in both unconditional and routed sets
 - `invoke_skill` tool returns expected content; unknown skill name raises a clear error
-- Manifest injected exactly once across multiple turns (guard on `id(context)`)
+- Manifest injected exactly once across multiple turns (per-run guard via `RunState.manifest_injected`)
 - `RunSkillHooks` injects for all agents in a two-agent handoff scenario
 
 ---
@@ -700,17 +703,17 @@ Additional directories can be supplied via `SkillConfig.extra_dirs`.
 
 ### Frontmatter fields
 
-| Field            | Type               | Required | Notes                                                                                          |
-| ---------------- | ------------------ | -------- | ---------------------------------------------------------------------------------------------- |
-| `name`           | `str`              | No       | Overrides the directory name as the skill label                                                |
-| `description`    | `str`              | Yes      | Short summary; used in manifest and routing                                                    |
-| `when_to_use`    | `str`              | No       | Prose trigger description with example phrases                                                 |
-| `allowed-tools`  | `list[str]`        | No       | Tools this skill may invoke; surfaced in manifest Phase 3, enforced in `context: fork` Phase 4 |
-| `argument-hint`  | `str`              | No       | Human-readable hint, e.g. `"[target] [env]"`                                                   |
-| `arguments`      | `list[str]`        | No       | Named args for `$arg_name` substitution in body                                                |
-| `context`        | `inline` \| `fork` | No       | `fork` implemented in Phase 4; default `inline`                                                |
-| `user-invocable` | `bool`             | No       | Default `true`; `false` hides from manifest                                                    |
-| `deprecated`     | `bool`             | No       | Default `false`; `true` excludes from manifest and router                                      |
+| Field            | Type        | Required | Notes                                                                                          |
+| ---------------- | ----------- | -------- | ---------------------------------------------------------------------------------------------- |
+| `name`           | `str`       | No       | Overrides the directory name as the skill label                                                |
+| `description`    | `str`       | Yes      | Short summary; used in manifest and routing                                                    |
+| `when_to_use`    | `str`       | No       | Prose trigger description with example phrases                                                 |
+| `allowed-tools`  | `list[str]` | No       | Tools this skill may invoke; surfaced in manifest Phase 3, enforced in `context: fork` Phase 6 |
+| `argument-hint`  | `str`       | No       | Human-readable hint, e.g. `"[target] [env]"`                                                   |
+| `arguments`      | `list[str]` | No       | Named args for `$arg_name` substitution in body                                                |
+| `context`        | `inline`    | No       | Default `inline`; `context: fork` is planned for Phase 6                                       |
+| `user-invocable` | `bool`      | No       | Default `true`; `false` hides from manifest                                                    |
+| `deprecated`     | `bool`      | No       | Default `false`; `true` excludes from manifest and router                                      |
 
 ### `FileSkill`
 
@@ -892,7 +895,7 @@ misconfiguration during development without failing the substitution.
 When a `FileSkill` declares `allowed-tools`, that list is included in the skill's
 manifest entry so the model knows which tools the skill expects to use. This is
 informational in Phase 3 — the agent still has access to all its configured tools.
-Enforcement (restricting the tool set) is deferred to Phase 4 (`context: fork`),
+Enforcement (restricting the tool set) is deferred to Phase 6 (`context: fork`),
 where the forked agent is constructed with only the declared tools.
 
 ```
@@ -977,61 +980,7 @@ deduplication logic. `src/openai_agents_skills/substitution.py` — `substitute_
 ## Phase 4 — Advanced Triggering
 
 **Goal:** Richer triggering patterns beyond always-on and message-routed injection.
-Skills fire in response to tool results, after model turns, and in isolated sub-agents.
-
-### `context: fork` — isolated sub-agent
-
-Skills with `context: fork` run in a fully isolated `Runner.run()` call rather than
-injecting inline into the current conversation. Useful for self-contained tasks that
-should not be contaminated by the parent conversation history.
-
-Implementation:
-
-- When `SkillHooks` detects a triggered skill with `context == "fork"`, instead of
-  prepending blocks to `input_items`, it schedules a nested `Runner.run()` call using
-  a temporary `Agent` whose `instructions` contain only the skill's prompt body.
-- The forked run receives the current user message as its input.
-- The result is injected back into the parent conversation as a synthetic
-  `function_call_output` item so the parent agent can act on it.
-
-```python
-fork_agent = Agent(
-    name=f"skill:{skill.name}",
-    instructions=skill_prompt_body,
-)
-fork_result = await Runner.run(fork_agent, input=last_user_message)
-# inject fork_result.final_output back into parent input_items as a user-role message
-result_block = {
-    "role": "user",
-    "content": f"[skill:{skill.name} result]\n{fork_result.final_output}",
-}
-input_items.append(result_block)
-```
-
-The fork result is injected as a plain `user`-role message, not as a
-`function_call_output`. The OpenAI Responses API and Chat Completions API both require
-`function_call_output` / `tool_result` items to be paired with a preceding
-`function_call` / `tool_use` item; an unpaired result item causes an API validation
-error. A user-role message with a structured prefix (`[skill:name result]`) is
-unambiguous to the model and requires no synthetic tool-use scaffolding.
-
-**Open design question — conversation history pollution.** Injecting a `user`-role
-message via `on_llm_start` means it may be accumulated into conversation history by
-the SDK across turns. On turn N+1 the model would see `[skill:name result]` as if
-the user wrote it, which could interfere with multi-turn coherence. Alternatives
-under consideration for the Phase 4 implementation:
-
-- Synthetic `function_call` + `function_call_output` pair — API-valid but complex;
-  requires generating a fake tool-call ID and ensuring the parent agent has a matching
-  tool registered.
-- `system`-role injection — not universally supported; some providers reject system
-  messages mid-conversation.
-- Post-turn injection via `on_llm_end` instead of `on_llm_start` — avoids polluting
-  the next input, but requires a different hook.
-
-This injection format must be resolved with a concrete decision before Phase 4
-implementation begins. The placeholder above (user-role) is correct for the initial
-prototype but should be treated as tentative.
+Skills fire in response to tool results and after model turns.
 
 ### Tool-result triggers
 
@@ -1048,56 +997,13 @@ Implementation in `SkillHooks`:
 
 ```python
 async def on_tool_end(self, context, agent, tool, result) -> None:
-    for skill in self._registry.get_triggered_by_tool(tool.name):
-        self._pending.append(skill)
-
-async def on_llm_start(self, context, agent, system_prompt, input_items) -> None:
-    # ... existing unconditional + routed injection ...
-    for skill in self._pending:
-        blocks = await skill.get_prompt_blocks()
-        input_items[0:0] = blocks
-    self._pending.clear()
-```
-
-Injecting at the _next_ `on_llm_start` rather than the same turn avoids confusing
-the model with mid-turn context changes.
-
-**Cross-agent `_pending` drain in `RunSkillHooks`.** `RunSkillHooks` fires `on_tool_end`
-and `on_llm_start` for every agent in a run. This means a tool completing on Agent A
-will queue a skill in `_pending`, and that skill will drain into the next `on_llm_start`
-call — which may be for Agent B in a handoff scenario. This is intentional: pending
-skills are run-scoped, not agent-scoped. A skill triggered by a tool result on any agent
-is relevant to the continuing run and should inject into the next LLM call regardless of
-which agent handles it. The Phase 4 test suite must include a case where the triggering
-agent and the next-LLM-call agent are different, verifying this cross-agent drain
-behaviour explicitly.
-
-**`_pending` must be run-scoped, not instance-scoped.** If the same `SkillHooks`
-instance is passed to two concurrent `Runner.run()` calls, instance-level `_pending`
-state from run A can drain into run B's next `on_llm_start`. An `asyncio.Lock` does
-not help here — it guards against concurrent mutation within a run, not against
-cross-run contamination.
-
-The fix is the same pattern used for the double-injection guard: use a
-`ContextVar[list[Skill]]` so pending state is scoped to the current async task (i.e.
-the current `Runner.run()` call), not the hook instance. This also eliminates the need
-for the lock, since `ContextVar` is task-local and not shared between concurrent runs.
-
-```python
-from contextvars import ContextVar
-
-_pending_skills: ContextVar[list[Skill]] = ContextVar("_pending_skills", default=None)
-
-async def on_tool_end(self, context, agent, tool, result) -> None:
-    pending = _pending_skills.get()
-    if pending is None:
-        pending = []
-        _pending_skills.set(pending)
+    pending = _get_run_state().pending_skills
     for skill in self._registry.get_triggered_by_tool(tool.name):
         pending.append(skill)
 
 async def on_llm_start(self, context, agent, system_prompt, input_items) -> None:
-    pending = _pending_skills.get()
+    # ... existing unconditional + routed injection ...
+    pending = _get_run_state().pending_skills
     if pending:
         snapshot = list(pending)
         pending.clear()
@@ -1107,6 +1013,27 @@ async def on_llm_start(self, context, agent, system_prompt, input_items) -> None
             all_blocks.extend(blocks)
         input_items[0:0] = all_blocks
 ```
+
+Injecting at the _next_ `on_llm_start` rather than the same turn avoids confusing
+the model with mid-turn context changes.
+
+**Cross-agent `_pending` drain in `RunSkillHooks`.** `RunSkillHooks` fires `on_tool_end`
+and `on_llm_start` for every agent in a run. This means a tool completing on Agent A
+will queue a skill in `pending_skills`, and that skill will drain into the next
+`on_llm_start` call — which may be for Agent B in a handoff scenario. This is
+intentional: pending skills are run-scoped, not agent-scoped. A skill triggered by a
+tool result on any agent is relevant to the continuing run and should inject into the
+next LLM call regardless of which agent handles it. The Phase 4 test suite must include
+a case where the triggering agent and the next-LLM-call agent are different, verifying
+this cross-agent drain behaviour explicitly.
+
+**`pending_skills` is run-scoped, not instance-scoped.** If the same `SkillHooks`
+instance is passed to two concurrent `Runner.run()` calls, instance-level pending state
+from run A can drain into run B's next `on_llm_start`. `RunState.pending_skills` is
+held in a `ContextVar` scoped to the current async task (i.e. the current
+`Runner.run()` call), so pending state is naturally isolated per run. This also
+eliminates the need for any locking — `ContextVar` is task-local and not shared between
+concurrent runs.
 
 ### Post-turn skills via `on_llm_end`
 
@@ -1118,8 +1045,9 @@ class Skill:
     triggers_after_turn: bool = False
 ```
 
-In `on_llm_end`, skills with `triggers_after_turn = True` are queued in `_pending`
-(same drain mechanism), causing them to inject at the start of the next turn.
+In `on_llm_end`, skills with `triggers_after_turn = True` are queued in
+`_get_run_state().pending_skills` (same drain mechanism), causing them to inject at the
+start of the next turn.
 
 ### `SkillRegistry` additions for Phase 4
 
@@ -1134,16 +1062,13 @@ class SkillRegistry:
 
 ### Tests for Phase 4
 
-- `context: fork` spawns an isolated `Runner.run()` (verified via mock runner)
-- Fork result injected into parent `input_items` as expected content
-- `triggers_after_tools`: skill queued in `_pending` after matching tool fires
+- `triggers_after_tools`: skill queued in pending after matching tool fires
 - `triggers_after_tools`: skill not queued when tool name does not match
-- `_pending` queue is drained and cleared at next `on_llm_start`
-- `triggers_after_turn`: skill queued in `_pending` after `on_llm_end`
+- Pending queue is drained and cleared at next `on_llm_start`
+- `triggers_after_turn`: skill queued in pending after `on_llm_end`
 - Multiple pending skills from different trigger sources all inject correctly
 - `get_triggered_by_tool` returns empty list when no skills match
 - `get_post_turn` returns only skills with the flag set
-- `_pending_lock` prevents lost appends when two `on_tool_end` callbacks fire concurrently (use `asyncio.gather` over two mock tool completions in the test)
 - Cross-agent drain: tool fires on Agent A, next `on_llm_start` is for Agent B — skill injects into Agent B's `input_items` (run-scoped intent)
 
 ---
@@ -1165,28 +1090,19 @@ class SkillSource(str, Enum):
 Trust level is stored on `FileSkill` and surfaced in log output. Phase 5 defines the
 following concrete enforcement rules:
 
-- `context: fork` is permitted for all trust levels (enforcement is already handled
-  by the forked agent's isolated tool list in Phase 4).
 - `allowed-tools` declarations are honoured for all trust levels.
+- `context: fork` enforcement is deferred to Phase 6, when the forked sub-agent design
+  is finalised.
 - Future: `EXTRA` skills may be restricted from using `context: fork` in a hardened
-  deployment mode (opt-in via `SkillConfig(restrict_extra_fork=True)`). This is
-  **not** implemented in Phase 5 — it is the one "reserved for future" item that
-  remains here, with a concrete opt-in flag as its eventual surface.
-
-If enforcement requirements beyond these do not materialise before Phase 5 ships, the
-`restrict_extra_fork` flag should be dropped and this section trimmed to just logging.
+  deployment mode (opt-in via `SkillConfig(restrict_extra_fork=True)`). This will be
+  addressed in Phase 6. If fork enforcement requirements do not materialise before
+  Phase 6 ships, the `restrict_extra_fork` flag should be dropped and this section
+  trimmed to just logging.
 
 ### Path traversal validation
 
-When resolving SKILL.md file paths during loading, normalise and assert the resolved
-path is still a descendant of the expected base directory. Any `name` or `arguments`
-field value containing path separators or `..` is rejected at parse time.
-
-```python
-def assert_within_base(path: Path, base: Path) -> None:
-    if not path.resolve().is_relative_to(base.resolve()):
-        raise ValueError(f"Path {path} escapes base directory {base}")
-```
+Path traversal validation was implemented in Phase 3. No new work in Phase 5 — verify
+test coverage meets the 90% target and confirm the audit log output is production-quality.
 
 ### Deduplication correctness
 
@@ -1196,7 +1112,7 @@ project > extra).
 
 ### `allowed-tools` audit
 
-`allowed-tools` enforcement moves to Phase 4 (`context: fork`). Phase 5 adds a
+`allowed-tools` enforcement moves to Phase 6 (`context: fork`). Phase 5 adds a
 static audit: warn if a skill declares an `allowed-tools` entry that does not match
 any tool registered on the agent. This surfaces configuration drift (e.g. a tool was
 renamed or removed) before the agent runs.
@@ -1226,6 +1142,17 @@ a name not present in `agent_tools`. It does not raise — the agent continues t
 
 ---
 
+## Phase 6 — Forked Sub-agents (Planned)
+
+**Phase 6 — Forked Sub-agents** (Planned)
+
+Skills with `context: fork` run in an isolated `Runner.run()` call. The injection
+mechanism for returning the fork result to the parent conversation must be resolved
+before this phase is designed in detail. Candidates: user-role message, synthetic
+tool-call pair, or `on_llm_end` post-turn injection.
+
+---
+
 ## Module Layout
 
 ```
@@ -1233,12 +1160,13 @@ src/openai_agents_skills/
     __init__.py          # Public API — grows with each phase
     _version.py
     py.typed
-    skills.py            # Skill, SkillProtocol, @skill_factory decorator    ✅ Phase 1
-    hooks.py             # SkillHooks, RunSkillHooks — injection engine      ✅ Phase 1 / Phase 2
-    registry.py          # SkillRegistry — routing, tool triggers            Phase 2 / Phase 4
-    router.py            # SkillRouter protocol, LLMSkillRouter, NullSkillRouter  Phase 2
-    loader.py            # load_skills_from_dir, load_all_skills, dedup      Phase 3
-    substitution.py      # substitute_args, substitute_vars                  Phase 3
+    skills.py            # Skill — abstract base class                          ✅ Phase 1
+    hooks.py             # SkillHooks, RunSkillHooks — injection engine         ✅ Phase 1 / Phase 2
+    _state.py            # RunState, _run_state, _get_run_state() — private     Phase 2
+    registry.py          # SkillRegistry — routing, tool triggers               Phase 2 / Phase 4
+    router.py            # SkillRouter protocol, LLMSkillRouter                 Phase 2
+    loader.py            # load_skills_from_dir, load_all_skills, dedup         Phase 3
+    substitution.py      # substitute_args, substitute_vars                     Phase 3
     bundled/
         __init__.py      # register_bundled_skills()
         # concrete Skill subclasses added as needed
@@ -1246,13 +1174,13 @@ src/openai_agents_skills/
 tests/
     __init__.py
     test_version.py
-    test_skills.py       # Skill, SkillProtocol, @skill_factory               ✅ Phase 1
-    test_hooks.py        # SkillHooks injection                               ✅ Phase 1
-    test_registry.py     # SkillRegistry routing, tool triggers               Phase 2 / Phase 4
-    test_router.py       # LLMSkillRouter, NullSkillRouter, SkillRouter protocol  Phase 2
-    test_loader.py       # SKILL.md loading, dedup, priority                  Phase 3
-    test_substitution.py # argument and variable substitution                 Phase 3
-    test_advanced.py     # fork, tool-result triggers, post-turn skills       Phase 4
+    test_skills.py       # Skill (ABC), is_enabled gate                         ✅ Phase 1
+    test_hooks.py        # SkillHooks injection                                 ✅ Phase 1
+    test_registry.py     # SkillRegistry routing, tool triggers                 Phase 2 / Phase 4
+    test_router.py       # LLMSkillRouter, SkillRouter protocol                 Phase 2
+    test_loader.py       # SKILL.md loading, dedup, priority                    Phase 3
+    test_substitution.py # argument and variable substitution                   Phase 3
+    test_advanced.py     # tool-result triggers, post-turn skills               Phase 4
     fixtures/
         .agent/
             skills/
@@ -1266,8 +1194,9 @@ tests/
 
 | Phase                       | Status      | What ships                                                                         | Key SDK surface                        |
 | --------------------------- | ----------- | ---------------------------------------------------------------------------------- | -------------------------------------- |
-| **1 — Proto**               | ✅ Complete | `Skill`, `SkillProtocol`, `SkillHooks`, `@skill_factory`, always-on injection      | `AgentHooks.on_llm_start`              |
+| **1 — Proto**               | ✅ Complete | `Skill`, `SkillHooks`, always-on injection                                         | `AgentHooks.on_llm_start`              |
 | **2 — Routing**             | 🟡 Planned  | `SkillRegistry`, `when_to_use` matching, manifest, `invoke_skill`, `RunSkillHooks` | `AgentHooks.on_start`, `RunHooks`      |
 | **3 — File skills**         | 🟡 Planned  | SKILL.md loading, frontmatter parsing, arg substitution, user + project dirs       | —                                      |
-| **4 — Advanced triggering** | 🟡 Planned  | `context: fork`, tool-result triggers, post-turn skills                            | `AgentHooks.on_tool_end`, `on_llm_end` |
-| **5 — Hardening**           | 🟡 Planned  | Source trust levels, path validation, `allowed-tools` audit, full docs             | —                                      |
+| **4 — Advanced triggering** | 🟡 Planned  | Tool-result triggers, post-turn skills                                             | `AgentHooks.on_tool_end`, `on_llm_end` |
+| **5 — Hardening**           | 🟡 Planned  | Source trust levels, `allowed-tools` audit, full docs                              | —                                      |
+| **6 — Forked sub-agents**   | 🟡 Planned  | `context: fork` — isolated sub-agent execution                                     | `Runner.run()` (nested)                |

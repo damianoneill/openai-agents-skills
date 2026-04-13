@@ -45,7 +45,7 @@ not optional — you do not want to blindly dump every skill into every call.
 
 ```python
 from openai import AsyncOpenAI
-from openai_agents import Agent, Runner
+from agents import Agent, Runner
 from openai_agents_skills import SkillHooks, SkillRegistry, LLMSkillRouter
 
 registry = SkillRegistry(
@@ -310,20 +310,21 @@ while still delivering the guidance exactly when it is needed.
 
 ## Phase 4 Extension: Tool-Result Triggers
 
-In Phase 4, `on_tool_end` can activate skills based on _which tool just ran_, giving
-even finer-grained control than message routing alone:
+In Phase 4, `SkillHooks.on_tool_end` can queue skills based on _which tool just ran_,
+giving even finer-grained control than message routing alone. Skills declare the tools
+that should trigger them via a class attribute; `SkillHooks` handles all queuing and
+drains the pending list at the next `on_llm_start`:
 
 ```python
 class LogParserSkill(Skill):
-    triggered_by_tools = ["run_show_command"]   # activate after this tool fires
+    name = "log-parser"
+    description = "Parses Junos log output and error codes."
+    triggers_after_tools = ["run_show_command"]  # queue after this tool completes
 
-    async def on_tool_end(self, context, agent, tool, result):
-        self._pending_result = result           # stash result for next on_llm_start
-
-    async def get_prompt_blocks(self, args=""):
-        ...                                     # incorporate _pending_result into blocks
+    async def get_prompt_blocks(self, args: str = "") -> list:
+        ...  # return log-parsing guidance blocks as normal
 ```
 
-With this, `log-parser` automatically activates after every `run_show_command`
+With this, `log-parser` is automatically queued after every `run_show_command`
 invocation — even if the user message that triggered the tool call did not mention
-logs — and can tailor its block to highlight anomalies in the specific command output.
+logs — and its prompt blocks are prepended at the start of the next LLM call.
