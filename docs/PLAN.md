@@ -368,10 +368,41 @@ activate the right skills mid-conversation. This is an accepted v1 constraint;
 callers that need multi-turn routing can pass a synthesised summary string to
 `select_for_message` directly rather than relying on last-message extraction.
 
+For example, in a network troubleshooting session the user's short follow-up messages
+carry no routing signal on their own:
+
+| Turn | User message                                          | Router sees                   | Skills selected                |
+| ---- | ----------------------------------------------------- | ----------------------------- | ------------------------------ |
+| 1    | "Let's work through the BGP troubleshooting workflow" | full sentence                 | `bgp-troubleshooting` ✅       |
+| 2    | "Run the show command"                                | "Run the show command"        | _(nothing — no BGP signal)_ ❌ |
+| 3    | "What does that output mean?"                         | "What does that output mean?" | _(nothing — no log signal)_ ❌ |
+
+By Turn 2 the router sees only a short imperative with no domain context. The
+`bgp-troubleshooting` skill that is clearly still relevant goes uninjected. The fix is
+to build a synthesised summary from recent turns and pass it directly to
+`select_for_message` instead of relying on last-message extraction:
+
+```python
+# Caller builds a routing summary from recent conversation history
+recent_turns = [
+    "User: Let's work through the BGP troubleshooting workflow",
+    "Assistant: Sure, let's start with show bgp neighbor...",
+    "User: Run the show command",
+]
+routing_summary = " | ".join(recent_turns)
+
+# Pass the summary directly — bypasses last-message extraction
+active_skills = await registry.select_for_message(routing_summary)
+```
+
+The summary gives the router enough signal to recognise "we are mid-BGP-diagnosis" and
+keep selecting `bgp-troubleshooting` even when the latest message is just "What does
+that output mean?".
+
 ### Routing-aware `SkillHooks`
 
 `SkillHooks` is extended to accept a `SkillRegistry`. At `on_llm_start` it extracts
-the last user message from `input_items` and uses `select_for_message` to identify
+a routing context string from `input_items` and uses `select_for_message` to identify
 which skills to fire alongside the always-on unconditional set.
 
 ```python
@@ -380,16 +411,21 @@ class SkillHooks(AgentHooks):
         self,
         skills: list[SkillProtocol] | None = None,
         registry: SkillRegistry | None = None,
+        routing_context_turns: int = 1,
     ) -> None:
         # When both are provided, `skills` are treated as additional unconditional
         # skills merged with registry.get_always_on(). Registry routing applies on top.
         # Duplicates (by name) are deduplicated — registry skill wins.
+        #
+        # routing_context_turns controls how many recent user messages are collected
+        # and joined into the routing context string. Default 1 preserves the
+        # original single-message behaviour.
         ...
 
     async def on_llm_start(self, context, agent, system_prompt, input_items) -> None:
         base = self._registry.get_always_on() if self._registry else self._skills
-        last_user_msg = _extract_last_user_message(input_items)
-        routed = await self._registry.select_for_message(last_user_msg) if self._registry else []
+        routing_ctx = _extract_routing_context(input_items, turns=self._routing_context_turns)
+        routed = await self._registry.select_for_message(routing_ctx) if self._registry else []
         all_blocks: list = []
         for skill in _deduplicate([*base, *routed]):
             if hasattr(skill, "is_enabled") and not skill.is_enabled():
@@ -399,9 +435,47 @@ class SkillHooks(AgentHooks):
         input_items[0:0] = all_blocks  # single prepend — preserves registration order
 ```
 
+**`routing_context_turns` — multi-turn routing context.** The accepted v1 limitation
+(routing based only on the latest message) is addressed directly here. By setting
+`routing_context_turns=N`, `SkillHooks` collects the last N user messages from
+`input_items` and joins them into a single routing context string, giving the router
+enough conversational signal to select the right skills mid-workflow.
+
+```python
+def _extract_routing_context(input_items: list, turns: int = 1) -> str:
+    """Return the last `turns` user messages joined by ' | ', newest last."""
+    user_texts = [
+        item["content"]
+        for item in input_items
+        if isinstance(item, dict) and item.get("role") == "user"
+    ]
+    recent = user_texts[-turns:] if turns > 0 else user_texts
+    return " | ".join(recent)
+```
+
+With `routing_context_turns=3`, the same BGP session that failed mid-conversation now
+works correctly:
+
+| Turn | `_extract_routing_context` output (window=3)                                                                   | Skills selected                        |
+| ---- | -------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| 1    | `"Let's work through the BGP troubleshooting workflow"`                                                        | `bgp-troubleshooting` ✅               |
+| 2    | `"Let's work through the BGP troubleshooting workflow \| Run the show command"`                                | `bgp-troubleshooting` ✅               |
+| 3    | `"Let's work through the BGP troubleshooting workflow \| Run the show command \| What does that output mean?"` | `bgp-troubleshooting`, `log-parser` ✅ |
+
+**Default value.** `routing_context_turns=1` preserves the existing single-message
+behaviour so callers that do not set this parameter are unaffected. Setting it to `0`
+passes all user messages in the conversation, which is appropriate for very short
+sessions but may become expensive in long ones.
+
+**Interaction with the LRU cache.** `LLMSkillRouter` caches routing results keyed on
+the full context string. A multi-turn string is longer and more unique than a single
+message, so cache hit rates will be lower when `routing_context_turns > 1`. This is
+the correct trade-off — mid-conversation follow-ups are inherently less likely to
+repeat verbatim.
+
 **`get_always_on()` naming.** The name "unconditional" was misleading — it implied the
 method bypasses `is_enabled()`, when in fact it applies both the routing filter (no
-`when_to_use`) *and* the `is_enabled()` gate. `get_always_on()` reads as "skills that
+`when_to_use`) _and_ the `is_enabled()` gate. `get_always_on()` reads as "skills that
 should always run" which captures both filters. The docstring makes both explicit.
 
 **`is_enabled()` is the final gate.** `get_always_on()` already filters disabled
@@ -626,17 +700,17 @@ Additional directories can be supplied via `SkillConfig.extra_dirs`.
 
 ### Frontmatter fields
 
-| Field            | Type               | Required | Notes                                                        |
-| ---------------- | ------------------ | -------- | ------------------------------------------------------------ |
-| `name`           | `str`              | No       | Overrides the directory name as the skill label              |
-| `description`    | `str`              | Yes      | Short summary; used in manifest and routing                  |
-| `when_to_use`    | `str`              | No       | Prose trigger description with example phrases               |
+| Field            | Type               | Required | Notes                                                                                          |
+| ---------------- | ------------------ | -------- | ---------------------------------------------------------------------------------------------- |
+| `name`           | `str`              | No       | Overrides the directory name as the skill label                                                |
+| `description`    | `str`              | Yes      | Short summary; used in manifest and routing                                                    |
+| `when_to_use`    | `str`              | No       | Prose trigger description with example phrases                                                 |
 | `allowed-tools`  | `list[str]`        | No       | Tools this skill may invoke; surfaced in manifest Phase 3, enforced in `context: fork` Phase 4 |
-| `argument-hint`  | `str`              | No       | Human-readable hint, e.g. `"[target] [env]"`                 |
-| `arguments`      | `list[str]`        | No       | Named args for `$arg_name` substitution in body              |
-| `context`        | `inline` \| `fork` | No       | `fork` implemented in Phase 4; default `inline`              |
-| `user-invocable` | `bool`             | No       | Default `true`; `false` hides from manifest                  |
-| `deprecated`     | `bool`             | No       | Default `false`; `true` excludes from manifest and router    |
+| `argument-hint`  | `str`              | No       | Human-readable hint, e.g. `"[target] [env]"`                                                   |
+| `arguments`      | `list[str]`        | No       | Named args for `$arg_name` substitution in body                                                |
+| `context`        | `inline` \| `fork` | No       | `fork` implemented in Phase 4; default `inline`                                                |
+| `user-invocable` | `bool`             | No       | Default `true`; `false` hides from manifest                                                    |
+| `deprecated`     | `bool`             | No       | Default `false`; `true` excludes from manifest and router                                      |
 
 ### `FileSkill`
 
