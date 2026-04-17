@@ -72,12 +72,12 @@ agent = Agent(
 
 ### Skills Registered
 
-| Skill name            | `when_to_use`                                                                                     | Routing                   |
-| --------------------- | ------------------------------------------------------------------------------------------------- | ------------------------- |
-| `bgp-troubleshooting` | "Use when user reports BGP session issues, peer flapping, route withdrawal, or AS-path problems." | Routed (selective)        |
-| `log-parser`          | "Use when user provides log output, syslog messages, or Juniper error codes."                     | Routed (selective)        |
-| `junos-cli-reference` | "Use when user needs show commands, commit syntax, or operational-mode CLI guidance."             | Routed (selective)        |
-| `escalation-policy`   | _(empty)_                                                                                         | Always-on (unconditional) |
+| Skill name            | `description`                                                       | `when_to_use`                                                                                     | Routing                   |
+| --------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------- |
+| `bgp-troubleshooting` | "BGP session diagnostics and peer flap analysis."                   | "Use when user reports BGP session issues, peer flapping, route withdrawal, or AS-path problems." | Routed (selective)        |
+| `log-parser`          | "Parse and interpret Junos syslog messages and error codes."        | "Use when user provides log output, syslog messages, or Juniper error codes."                     | Routed (selective)        |
+| `junos-cli-reference` | "Junos CLI commands, commit syntax, and operational-mode reference." | "Use when user needs show commands, commit syntax, or operational-mode CLI guidance."             | Routed (selective)        |
+| `escalation-policy`   | "When and how to escalate to Juniper TAC."                          | _(empty)_                                                                                         | Always-on (unconditional) |
 
 Because `escalation-policy` has an **empty `when_to_use`**, it is never passed to the
 router — it injects on every LLM call as long as `is_enabled()` returns `True`.
@@ -113,11 +113,12 @@ Only select skills clearly relevant to the message. Return {"selected": []} if n
 User message: "My BGP session to 10.1.1.1 keeps flapping..."
 
 Available skills:
-- bgp-troubleshooting: Use when user reports BGP session issues, peer flapping,
-  route withdrawal, or AS-path problems.
-- log-parser: Use when user provides log output, syslog messages, or Juniper error codes.
-- junos-cli-reference: Use when user needs show commands, commit syntax, or
-  operational-mode CLI guidance.
+- bgp-troubleshooting: BGP session diagnostics and peer flap analysis.
+  When to use: Use when user reports BGP session issues, peer flapping, route withdrawal, or AS-path problems.
+- log-parser: Parse and interpret Junos syslog messages and error codes.
+  When to use: Use when user provides log output, syslog messages, or Juniper error codes.
+- junos-cli-reference: Junos CLI commands, commit syntax, and operational-mode reference.
+  When to use: Use when user needs show commands, commit syntax, or operational-mode CLI guidance.
 ```
 
 Router responds: `{"selected": ["bgp-troubleshooting", "log-parser"]}`

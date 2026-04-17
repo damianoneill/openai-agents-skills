@@ -143,6 +143,47 @@ agent = Agent(
 
 ---
 
+## Registry & Routing
+
+For dynamic per-turn skill selection, use `SkillRegistry` with `LLMSkillRouter`.
+Skills with a non-empty `when_to_use` are forwarded to the router, which uses a
+lightweight LLM call to decide which skills are relevant for the current message.
+Skills with an empty `when_to_use` are always-on and inject unconditionally.
+
+```python
+from openai import AsyncOpenAI
+from agents import Agent, Runner
+from openai_agents_skills import LLMSkillRouter, SkillHooks, SkillRegistry
+
+router = LLMSkillRouter(client=AsyncOpenAI(), model="gpt-4o-mini")
+registry = SkillRegistry(router=router)
+registry.register(CitationSkill())        # non-empty when_to_use — routed selectively
+registry.register(SafetyReminderSkill())  # empty when_to_use   — always injected
+
+agent = Agent(
+    name="Assistant",
+    instructions="You are helpful.",
+    hooks=SkillHooks(registry=registry),
+)
+
+result = await Runner.run(agent, "What is the speed of light?")
+```
+
+For multi-agent runs (handoffs), pass `RunSkillHooks` to `Runner.run` instead —
+it fires for every agent in the handoff chain:
+
+```python
+from openai_agents_skills import RunSkillHooks
+
+result = await Runner.run(
+    agent,
+    "What is the speed of light?",
+    hooks=RunSkillHooks(registry=registry),
+)
+```
+
+---
+
 ## Roadmap
 
 | Phase               | Status      | What ships                                                               |
