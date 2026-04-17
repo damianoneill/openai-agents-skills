@@ -1,9 +1,65 @@
 # Example: Juniper Networks Troubleshooting Agent
 
 This document walks through a realistic end-to-end scenario for a Juniper Networks
-troubleshooting agent built with `openai-agents-skills`. It shows what skills are
-registered, when `on_llm_start` fires, how routing selects the right skills per turn,
-and what the injected context looks like at each step.
+troubleshooting agent built with `openai-agents-skills`. It is written for both
+engineers who will implement it and managers who want to understand what the library
+does and why.
+
+---
+
+## What Problem Does This Solve?
+
+As AI agents grow in capability, their system prompts tend to grow with them — absorbing
+every checklist, procedure, and contextual rule the agent might ever need. This creates
+three problems:
+
+- **Token cost**: Every LLM call sends the full prompt, including guidance that is
+  irrelevant to the current conversation.
+- **Maintenance**: Updating a procedure means editing a monolithic prompt string shared
+  across every interaction.
+- **Quality**: Models perform worse when the context is cluttered with content that does
+  not apply to the current task.
+
+`openai-agents-skills` solves this by making instructions **composable and selective**.
+A *Skill* is a named block of instructions that knows when it is relevant. The library
+injects only the skills that matter for each user message, leaving the rest out of the
+model's context entirely.
+
+**In production this means:** a BGP checklist is only sent when the user is asking
+about BGP. A log-parsing reference only appears when log output is present. A
+documentation-handoff instruction is always there. The main agent's system prompt
+stays lean and focused.
+
+---
+
+## Key Concepts
+
+| Concept | What it does |
+|---|---|
+| **`Skill`** | A named unit of instructions. Implements `get_prompt_blocks()` which returns the content to prepend to the model's input. |
+| **Always-on skill** | A skill with an empty `when_to_use`. Injects on every LLM call unconditionally. Used for standing policies, org context, handoff rules. |
+| **Routed skill** | A skill with a `when_to_use` description. Only injects when a router selects it as relevant to the current message. |
+| **`SkillRegistry`** | Holds all registered skills and knows which are always-on vs routable. |
+| **`LLMSkillRouter`** | Sends the user's message and a skill manifest to a lightweight model. Returns which routed skills to activate. Results are LRU-cached so repeated messages within a session pay the routing cost only once. |
+| **`SkillHooks`** | An `AgentHooks` subclass that wires the registry into the OpenAI Agents SDK loop. No monkey-patching — it uses the SDK's standard extension point. |
+
+---
+
+## Why It Works This Way
+
+Skills inject via `AgentHooks.on_llm_start`, a standard SDK hook that fires before
+every `model.get_response()` call. The SDK passes a mutable list of input items;
+`SkillHooks` prepends the selected skill blocks to that list before the model sees it.
+This means:
+
+- **No changes to the agent's `instructions`, `tools`, or `model` configuration** —
+  skills are additive and transparent.
+- **Skills are re-evaluated on every LLM call**, not once per user turn. If the agent
+  calls a tool and re-invokes the LLM to reason about the result, the same skills
+  inject again. This keeps the model grounded throughout a multi-step investigation.
+- **Routing uses an LRU cache**: if the same message context triggers a second LLM call
+  (e.g. after a tool result), the router is not called again — the cached selection is
+  reused at zero cost.
 
 ---
 
