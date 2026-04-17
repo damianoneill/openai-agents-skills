@@ -11,7 +11,6 @@ A **Skill** is a named, reusable prompt fragment injected into the LLM's context
 in the agent loop via `AgentHooks`. This lets you package workflow instructions, checklists, or
 procedures as composable named units that can be shared across agents without duplicating configuration.
 
-> **All planned phases complete.** See [docs/PLAN.md](docs/PLAN.md) for the full implementation history.
 
 ---
 
@@ -255,7 +254,6 @@ registry = SkillRegistry(router=MyCustomRouter())
 | **4 — Advanced**    | ✅ Complete | Tool-result triggers, post-turn skills                                   |
 | **5 — Hardening**   | ✅ Complete | Source trust levels, path validation, coverage, docs                     |
 
-See [docs/PLAN.md](docs/PLAN.md) for the full phased plan.
 
 ---
 
