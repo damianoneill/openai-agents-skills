@@ -51,8 +51,7 @@ def _extract_json(content: Any) -> str:
     # typed content blocks: [{"type": "thinking", ...}, {"type": "text", "text": "..."}]
     if isinstance(content, list):
         content = " ".join(
-            block.get("text", "") if isinstance(block, dict) else str(block)
-            for block in content
+            block.get("text", "") if isinstance(block, dict) else str(block) for block in content
         )
 
     if not isinstance(content, str) or not content.strip():
