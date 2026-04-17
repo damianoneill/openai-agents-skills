@@ -49,12 +49,14 @@ you do not want to blindly dump every skill into every call.
 ### Agent
 
 ```python
-from openai import AsyncOpenAI
 from agents import Agent, Runner
+from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
+from openai import AsyncOpenAI
 from openai_agents_skills import SkillHooks, SkillRegistry, LLMSkillRouter
 
+model = OpenAIChatCompletionsModel("gpt-4o-mini", AsyncOpenAI())
 registry = SkillRegistry(
-    router=LLMSkillRouter(client=AsyncOpenAI(), model="gpt-4o-mini"),
+    router=LLMSkillRouter(model=model),
 )
 registry.register(BGPTroubleshootingSkill())
 registry.register(LogParserSkill())

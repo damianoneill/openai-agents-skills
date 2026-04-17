@@ -241,22 +241,21 @@ each registered skill) to an LLM. Returns a JSON list of skill names to activate
 class LLMSkillRouter:
     def __init__(
         self,
-        client: AsyncOpenAI,        # AsyncOpenAI or any AsyncOpenAI-compatible client
-        model: str = "gpt-4o-mini", # any model string the client accepts
+        model: Model,           # any agents.models.interface.Model instance
+        cache_size: int = 256,
     ) -> None: ...
 
     async def select(self, message: str, skills: list[Skill]) -> list[str]:
         # Build manifest from skills
-        # Call client.chat.completions.create with JSON response_format
+        # Call model to obtain a routing decision
         # Parse {"selected": [...]} and return name list
         # On any error: log WARNING, return []
         ...
 ```
 
-Uses `chat.completions.create` with `response_format={"type": "json_object"}` for
-maximum provider compatibility — works with OpenAI, LiteLLM, Bedrock, Vertex, Ollama,
-and any other OpenAI-compatible endpoint. Does not use the Responses API or
-`beta.chat.completions.parse`.
+Uses the SDK's `Model` interface — compatible with any model implementation the
+SDK supports (OpenAI, LiteLLM, Azure, Bedrock, Ollama, …). Does not rely on
+`chat.completions.create` or any provider-specific API surface.
 
 **Prompt skeleton:**
 
@@ -285,36 +284,34 @@ would be more expensive than one routing call.
 `maxsize=256`. Same message within the session returns cached selection without an
 additional LLM call. The cap prevents unbounded growth in long-running services where
 conversational agents tend to send varied messages (low hit rate, high churn). The
-`maxsize` is configurable via `LLMSkillRouter(client=..., model=..., cache_size=256)`.
+`maxsize` is configurable via `LLMSkillRouter(model=model, cache_size=256)`.
 
 **Fallback on error:** any exception is caught, logged at WARNING, and returns `[]` —
 the run continues with unconditional skills only.
 
 **LiteLLM / Bedrock usage:**
 
+Because `LLMSkillRouter` accepts any SDK `Model`, users simply pass the
+appropriate model implementation directly — no separate client configuration needed:
+
 ```python
+from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
+from agents.extensions.models.litellm_model import LitellmModel
 from openai import AsyncOpenAI
 from openai_agents_skills import LLMSkillRouter, SkillRegistry
 
 # OpenAI
-router = LLMSkillRouter(client=AsyncOpenAI(), model="gpt-4o-mini")
+model = OpenAIChatCompletionsModel("gpt-4o-mini", AsyncOpenAI())
+router = LLMSkillRouter(model=model)
 
-# Bedrock/Claude via LiteLLM (pass litellm AsyncOpenAI-compatible client)
-litellm_client = AsyncOpenAI(
-    base_url="http://0.0.0.0:4000",
-    api_key="...",
-)
-router = LLMSkillRouter(
-    client=litellm_client,
-    model="anthropic/claude-3-5-haiku-20241022",
-)
+# Bedrock/Claude via LiteLLM — same Model object your Agent already uses
+router = LLMSkillRouter(model=LitellmModel(model="bedrock/anthropic.claude-3-haiku-..."))
 
 registry = SkillRegistry(router=router)
 ```
 
-The `openai-agents` SDK's own LiteLLM integration (`set_litellm_model`) applies only
-to the agent's primary model. The skill router uses its own injected client, so the
-two are independent and can use different providers.
+The same `Model` instance you pass to your `Agent` can be shared with
+`LLMSkillRouter` — no extra credentials or client setup required.
 
 #### `SkillRegistry` with router
 

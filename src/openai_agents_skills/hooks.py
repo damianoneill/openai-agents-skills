@@ -486,7 +486,8 @@ class SkillHooks(AgentHooks, _SkillInjectionMixin):
         agent = Agent(hooks=SkillHooks([CitationSkill(), BulletSkill()]))
 
         # Phase 2 style — registry with routing
-        registry = SkillRegistry(router=LLMSkillRouter(client=AsyncOpenAI()))
+        model = OpenAIChatCompletionsModel("gpt-4o-mini", AsyncOpenAI())
+        registry = SkillRegistry(router=LLMSkillRouter(model=model))
         registry.register(CitationSkill())
         agent = Agent(hooks=SkillHooks(registry=registry))
     """

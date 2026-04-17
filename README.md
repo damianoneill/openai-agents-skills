@@ -172,12 +172,14 @@ lightweight LLM call to decide which skills are relevant for the current message
 Skills with an empty `when_to_use` are always-on and inject unconditionally.
 
 ```python
-from openai import AsyncOpenAI
 from agents import Agent, Runner
+from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
+from openai import AsyncOpenAI
 from openai_agents_skills import LLMSkillRouter, SkillHooks, SkillRegistry
 
-router = LLMSkillRouter(client=AsyncOpenAI(), model="gpt-4o-mini")
-# See "Custom SkillRouter" below for non-OpenAI providers (Bedrock, Azure, Ollama).
+model = OpenAIChatCompletionsModel("gpt-4o-mini", AsyncOpenAI())
+router = LLMSkillRouter(model=model)
+# Pass any SDK Model instance — LitellmModel, AnyLLMModel, or OpenAIChatCompletionsModel all work.
 registry = SkillRegistry(router=router)
 registry.register(CitationSkill())        # non-empty when_to_use — routed selectively
 registry.register(SafetyReminderSkill())  # empty when_to_use   — always injected
@@ -208,51 +210,37 @@ result = await Runner.run(
 
 ## Custom SkillRouter
 
-`LLMSkillRouter` works with any `AsyncOpenAI`-compatible client but requires
-`chat.completions.create` — which some providers (AWS Bedrock, Azure in certain
-configurations, Ollama) don't fully support. For those cases, subclass
-`BaseSkillRouter` and implement only `_call_model`. All routing logic — prompt
-building, JSON extraction, and LRU caching — is inherited automatically.
+`LLMSkillRouter` accepts any `agents.models.interface.Model` instance from the
+`openai-agents` SDK, so Bedrock, Azure, Ollama, and any other supported provider
+work out of the box. Pass the same model object you already have configured for
+your agent — no extra client setup required:
+
+```python
+from agents.extensions.models.litellm_model import LitellmModel
+from openai_agents_skills import LLMSkillRouter, SkillRegistry
+
+router = LLMSkillRouter(model=LitellmModel(model="bedrock/anthropic.claude-3-haiku-..."))
+registry = SkillRegistry(router=router)
+```
+
+For truly custom integrations not covered by the SDK (e.g. a proprietary API with
+a non-standard interface), subclass `BaseSkillRouter` and implement only
+`_call_model`. All routing logic — prompt building, JSON extraction, and LRU
+caching — is inherited automatically:
 
 ```python
 from openai_agents_skills import BaseSkillRouter
 
 
-class MyBedrockRouter(BaseSkillRouter):
-    """Route skills via AWS Bedrock Converse API."""
-
-    def __init__(self, bedrock_client, model_id: str) -> None:
-        super().__init__()          # inherits cache_size=256
-        self._client = bedrock_client
-        self._model_id = model_id
-
+class MyCustomRouter(BaseSkillRouter):
     async def _call_model(self, prompt: str) -> str:
-        # Only _call_model needs to be implemented.
-        # The response may contain prose before/after the JSON — BaseSkillRouter
-        # handles extraction automatically.
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: self._client.converse(
-                modelId=self._model_id,
-                messages=[{"role": "user", "content": [{"text": prompt}]}],
-            ),
-        )
-        return response["output"]["message"]["content"][0]["text"]
+        # Call your custom model API here.
+        # The response may contain prose before/after the JSON —
+        # BaseSkillRouter handles extraction automatically.
+        ...
 
 
-router = MyBedrockRouter(bedrock_client=boto3.client("bedrock-runtime"), model_id="...")
-registry = SkillRegistry(router=router)
-```
-
-Use this with `SkillRegistry` exactly as you would `LLMSkillRouter`.
-
-If you are on OpenAI and want stricter JSON-mode enforcement for weaker models,
-pass `use_response_format=True` to `LLMSkillRouter` — it is opt-in and disabled
-by default for maximum provider compatibility:
-
-```python
-router = LLMSkillRouter(client=AsyncOpenAI(), model="gpt-4o-mini", use_response_format=True)
+registry = SkillRegistry(router=MyCustomRouter())
 ```
 
 ---

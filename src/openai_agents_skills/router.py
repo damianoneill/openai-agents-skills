@@ -210,67 +210,85 @@ class BaseSkillRouter:
 
 
 class LLMSkillRouter(BaseSkillRouter):
-    """Skill router backed by any OpenAI-compatible ``chat.completions`` client.
+    """Skill router backed by any openai-agents SDK ``Model`` instance.
 
     The default routing implementation.  Sends the user message and a skill
-    manifest to the configured model via ``client.chat.completions.create`` and
-    parses the ``{"selected": [...]}`` JSON response.  Results are cached per
-    message string using an in-process LRU cache, so repeated routing of
-    identical messages within a session avoids redundant LLM calls.
+    manifest to the configured model via the SDK's ``Model.get_response()``
+    interface and parses the ``{"selected": [...]}`` JSON response.  Results
+    are cached per message string using an in-process LRU cache, so repeated
+    routing of identical messages within a session avoids redundant LLM calls.
 
-    For non-OpenAI providers (AWS Bedrock, Vertex AI, Ollama, Azure, etc.) see
-    :class:`BaseSkillRouter`, which lets you implement just the model call while
-    reusing the prompt building, JSON extraction, and caching logic.
+    Since ``openai-agents`` is a required dependency, pass the same ``Model``
+    instance you use for your ``Agent`` -- no separate client configuration is
+    needed.  Any SDK model works: ``OpenAIChatCompletionsModel``,
+    ``LitellmModel``, ``AnyLLMModel``, and so on.
+
+    For integrations not covered by any SDK model implementation, see
+    :class:`BaseSkillRouter`, which lets you implement just the model call
+    while reusing the prompt building, JSON extraction, and caching logic.
 
     Args:
-        client: Any ``AsyncOpenAI``-compatible async client.  Must expose a
-            ``client.chat.completions.create`` coroutine with the same signature
-            as ``openai.AsyncOpenAI``.
-        model: Model identifier the client accepts.  Default: ``"gpt-4o-mini"``.
-        cache_size: Maximum number of ``(message to names)`` entries in the LRU
+        model: Any openai-agents SDK ``Model`` instance.  Pass the same model
+            you give your ``Agent`` for zero extra configuration.
+        cache_size: Maximum number of ``(message -> names)`` entries in the LRU
             cache.  Default: 256.
-        use_response_format: When ``True``, passes
-            ``response_format={"type": "json_object"}`` to the completion call.
-            This can improve reliability on weaker models but is not supported
-            by all providers (e.g. AWS Bedrock raises ``UnsupportedParamsError``).
-            Default: ``False`` for maximum provider compatibility.
 
     Example::
 
+        from agents import Agent
+        from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
         from openai import AsyncOpenAI
         from openai_agents_skills import LLMSkillRouter, SkillRegistry
 
-        router = LLMSkillRouter(client=AsyncOpenAI(), model="gpt-4o-mini")
+        model = OpenAIChatCompletionsModel("gpt-4o-mini", AsyncOpenAI())
+        agent = Agent(model=model, ...)
+        router = LLMSkillRouter(model=model)
         registry = SkillRegistry(router=router)
     """
 
     def __init__(
         self,
-        client: Any,
-        model: str = "gpt-4o-mini",
+        model: Any,
         cache_size: int = 256,
-        use_response_format: bool = False,
     ) -> None:
         super().__init__(cache_size=cache_size)
-        self._client = client
         self._model = model
-        self._use_response_format = use_response_format
 
     async def _call_model(self, prompt: str) -> str:
-        """Call ``chat.completions.create`` and return the raw message content.
+        """Call the SDK Model and return the raw text response.
+
+        Invokes ``model.get_response()`` with the routing prompt and no tools,
+        handoffs, or output schema.  Tracing is disabled to avoid polluting the
+        agent's trace with internal routing calls.
 
         Args:
             prompt: The complete routing prompt.
 
         Returns:
-            The model's response text, or ``""`` if ``message.content`` is ``None``.
+            The first text block found in the model response, or ``""`` if the
+            response contains no text content.
         """
-        kwargs: dict[str, Any] = {
-            "model": self._model,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        if self._use_response_format:
-            kwargs["response_format"] = {"type": "json_object"}
-        response = await self._client.chat.completions.create(**kwargs)
-        content = response.choices[0].message.content
-        return content if content is not None else ""
+        from agents.model_settings import ModelSettings
+        from agents.models.interface import ModelTracing
+
+        response = await self._model.get_response(
+            system_instructions=None,
+            input=prompt,
+            model_settings=ModelSettings(),
+            tools=[],
+            output_schema=None,
+            handoffs=[],
+            tracing=ModelTracing.DISABLED,
+            previous_response_id=None,
+            conversation_id=None,
+            prompt=None,
+        )
+        for item in response.output:
+            content = getattr(item, "content", None)
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                text = getattr(block, "text", None)
+                if isinstance(text, str):
+                    return text
+        return ""

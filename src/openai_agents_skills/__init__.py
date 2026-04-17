@@ -26,6 +26,7 @@ Usage::
 
 Phase 2 — registry and routing::
 
+    from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
     from openai import AsyncOpenAI
     from openai_agents_skills import (
         LLMSkillRouter,
@@ -34,7 +35,8 @@ Phase 2 — registry and routing::
         make_invoke_skill_tool,
     )
 
-    router = LLMSkillRouter(client=AsyncOpenAI(), model="gpt-4o-mini")
+    model = OpenAIChatCompletionsModel("gpt-4o-mini", AsyncOpenAI())
+    router = LLMSkillRouter(model=model)
     registry = SkillRegistry(router=router)
     registry.register(MyConciseSkill())
 

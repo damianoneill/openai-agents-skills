@@ -29,10 +29,12 @@ class SkillRegistry:
 
     Example::
 
+        from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
         from openai import AsyncOpenAI
         from openai_agents_skills import LLMSkillRouter, SkillRegistry, SkillHooks
 
-        router = LLMSkillRouter(client=AsyncOpenAI(), model="gpt-4o-mini")
+        model = OpenAIChatCompletionsModel("gpt-4o-mini", AsyncOpenAI())
+        router = LLMSkillRouter(model=model)
         registry = SkillRegistry(router=router)
         registry.register(MySkill())
 
