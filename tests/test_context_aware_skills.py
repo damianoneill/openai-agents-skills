@@ -58,10 +58,13 @@ async def _fire_end(hooks: Any, context: Any = None, agent: Any = None) -> None:
     )
 
 
-async def _fire_tool_end(hooks: Any, tool_name: str, context: Any = None, agent: Any = None) -> None:
+async def _fire_tool_end(
+    hooks: Any, tool_name: str, context: Any = None, agent: Any = None
+) -> None:
     tool = MagicMock()
     tool.name = tool_name
     await hooks.on_tool_end(context=context, agent=agent, tool=tool, result="")
+
 
 # ---------------------------------------------------------------------------
 # 1 & 3.  get_prompt_blocks forwarding through SkillHooks (identity checks)
@@ -77,7 +80,9 @@ class TestContextForwardingSkillHooks:
             name = "capture"
             description = "Captures context"
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 received.append(context)
                 return []
 
@@ -97,7 +102,9 @@ class TestContextForwardingSkillHooks:
             name = "capture"
             description = "Captures agent"
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 received.append(agent)
                 return []
 
@@ -116,7 +123,9 @@ class TestContextForwardingSkillHooks:
             name = "org"
             description = "Injects org ID"
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 if context is not None:
                     org_id = context.context.org_id
                     return [{"role": "user", "content": f"org={org_id}"}]
@@ -139,7 +148,9 @@ class TestContextForwardingSkillHooks:
             name = "agent_name"
             description = "Injects agent name"
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 if agent is not None:
                     return [{"role": "user", "content": f"agent={agent.name}"}]
                 return [{"role": "user", "content": "no-agent"}]
@@ -161,7 +172,9 @@ class TestContextForwardingSkillHooks:
             name = "fallback"
             description = "Returns fallback when no context"
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 if context is None:
                     return [{"role": "user", "content": "fallback-content"}]
                 return [{"role": "user", "content": "live-content"}]
@@ -173,6 +186,7 @@ class TestContextForwardingSkillHooks:
         contents = [b["content"] for b in input_items if isinstance(b, dict)]
         assert "fallback-content" in contents
         assert "live-content" not in contents
+
 
 # ---------------------------------------------------------------------------
 # 4.  get_prompt_blocks forwarding through RunSkillHooks (identity checks)
@@ -188,7 +202,9 @@ class TestContextForwardingRunSkillHooks:
             name = "capture"
             description = "Captures context"
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 received.append(context)
                 return []
 
@@ -208,7 +224,9 @@ class TestContextForwardingRunSkillHooks:
             name = "capture"
             description = "Captures agent"
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 received.append(agent)
                 return []
 
@@ -228,7 +246,9 @@ class TestContextForwardingRunSkillHooks:
             name = "pair_capture"
             description = "Captures both context and agent"
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 received_pairs.append((context, agent))
                 return []
 
@@ -260,7 +280,9 @@ class TestContextAwareIsEnabled:
             def is_enabled(self, context: Any = None, agent: Any = None) -> bool:
                 return context is not None and bool(context.context.feature_on)
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 return [{"role": "user", "content": "feature-content"}]
 
         ctx = MagicMock()
@@ -282,7 +304,9 @@ class TestContextAwareIsEnabled:
             def is_enabled(self, context: Any = None, agent: Any = None) -> bool:
                 return context is not None
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 return [{"role": "user", "content": "context-content"}]
 
         hooks = SkillHooks(skills=[_RequiresContextSkill()])
@@ -301,7 +325,9 @@ class TestContextAwareIsEnabled:
             def is_enabled(self, context: Any = None, agent: Any = None) -> bool:
                 return context is not None and bool(context.context.feature_on)
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 return [{"role": "user", "content": "should-not-appear"}]
 
         ctx = MagicMock()
@@ -322,7 +348,9 @@ class TestContextAwareIsEnabled:
             def is_enabled(self, context: Any = None, agent: Any = None) -> bool:
                 return agent is not None and agent.name == "AllowedAgent"
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 return [{"role": "user", "content": "agent-specific-content"}]
 
         agent = MagicMock()
@@ -344,7 +372,9 @@ class TestContextAwareIsEnabled:
             def is_enabled(self, context: Any = None, agent: Any = None) -> bool:
                 return agent is not None and agent.name == "AllowedAgent"
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 return [{"role": "user", "content": "should-not-appear"}]
 
         agent = MagicMock()
@@ -367,7 +397,9 @@ class TestContextAwareIsEnabled:
                 received_in_is_enabled.append(context)
                 return True
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 return []
 
         ctx = _mock_context()
@@ -389,7 +421,9 @@ class TestContextAwareIsEnabled:
                 received_in_is_enabled.append(agent)
                 return True
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 return []
 
         agent = _mock_agent()
@@ -398,6 +432,7 @@ class TestContextAwareIsEnabled:
 
         assert len(received_in_is_enabled) == 1
         assert received_in_is_enabled[0] is agent
+
 
 # ---------------------------------------------------------------------------
 # 5.  Deferred (pending) paths - context forwarded via state.last_context
@@ -414,7 +449,9 @@ class TestContextAwareDeferredPaths:
             description = "Captures context when drained"
             triggers_after_tools = ["trigger_tool"]
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 received_context.append(context)
                 return [{"role": "user", "content": "pending-block"}]
 
@@ -444,7 +481,9 @@ class TestContextAwareDeferredPaths:
             description = "Captures agent when drained"
             triggers_after_tools = ["my_tool"]
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 received_agent.append(agent)
                 return []
 
@@ -473,7 +512,9 @@ class TestContextAwareDeferredPaths:
             description = "Captures context in post-turn drain"
             triggers_after_turn = True
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 received_context.append(context)
                 return [{"role": "user", "content": "post-turn-block"}]
 
@@ -506,7 +547,9 @@ class TestContextAwareDeferredPaths:
             description = "Triggered by tool"
             triggers_after_tools = ["some_tool"]
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 received_context.append(context)
                 return []
 
@@ -527,7 +570,9 @@ class TestContextAwareDeferredPaths:
         assert received_context[0] is new_ctx
         assert received_context[0] is not old_ctx
 
-    async def test_context_gated_pending_skill_respects_drain_time_context_in_is_enabled(self) -> None:
+    async def test_context_gated_pending_skill_respects_drain_time_context_in_is_enabled(
+        self,
+    ) -> None:
         # Pending skill is_enabled uses state.last_context at drain time
         # A blocking context prevents injection even though the skill was queued
         injected: list[str] = []
@@ -540,7 +585,9 @@ class TestContextAwareDeferredPaths:
             def is_enabled(self, context: Any = None, agent: Any = None) -> bool:
                 return context is not None and bool(context.context.allow_skill)
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 injected.append("gated-content")
                 return [{"role": "user", "content": "gated-content"}]
 
@@ -569,7 +616,9 @@ class TestContextAwareDeferredPaths:
             description = "Captures context in RunSkillHooks drain"
             triggers_after_tools = ["run_tool"]
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 received_context.append(context)
                 return []
 
@@ -589,6 +638,7 @@ class TestContextAwareDeferredPaths:
         assert len(received_context) == 1
         assert received_context[0] is drain_ctx
 
+
 # ---------------------------------------------------------------------------
 # 6.  SkillRegistry.get_always_on passes context/agent to is_enabled
 # ---------------------------------------------------------------------------
@@ -607,7 +657,9 @@ class TestContextForwardingViaRegistryGetAlwaysOn:
                 received_contexts.append(context)
                 return True
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 return []
 
         registry = SkillRegistry()
@@ -630,7 +682,9 @@ class TestContextForwardingViaRegistryGetAlwaysOn:
                 received_agents.append(agent)
                 return True
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 return []
 
         registry = SkillRegistry()
@@ -651,7 +705,9 @@ class TestContextForwardingViaRegistryGetAlwaysOn:
             def is_enabled(self, context: Any = None, agent: Any = None) -> bool:
                 return context is not None and bool(context.context.allowed)
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 return []
 
         registry = SkillRegistry()
@@ -675,7 +731,9 @@ class TestContextForwardingViaRegistryGetAlwaysOn:
             def is_enabled(self, context: Any = None, agent: Any = None) -> bool:
                 return context is not None
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 return []
 
         registry = SkillRegistry()
@@ -693,7 +751,9 @@ class TestContextForwardingViaRegistryGetAlwaysOn:
             def is_enabled(self, context: Any = None, agent: Any = None) -> bool:
                 return context is not None and bool(context.context.active)
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 return [{"role": "user", "content": "active-content"}]
 
         registry = SkillRegistry()
@@ -712,9 +772,12 @@ class TestContextForwardingViaRegistryGetAlwaysOn:
         await _fire(hooks, active_items, context=active_ctx)
 
         # manifest may be present; verify the skill content is absent for the inactive context
-        assert not any(b.get("content") == "active-content" for b in inactive_items if isinstance(b, dict))
+        assert not any(
+            b.get("content") == "active-content" for b in inactive_items if isinstance(b, dict)
+        )
         contents = [b["content"] for b in active_items if isinstance(b, dict)]
         assert "active-content" in contents
+
 
 # ---------------------------------------------------------------------------
 # 7.  invoke_skill tool passes its RunContextWrapper ctx to get_prompt_blocks
@@ -730,7 +793,9 @@ class TestInvokeSkillContext:
             name = "ctx_capture"
             description = "Captures context from invoke_skill"
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 received_contexts.append(context)
                 return [{"role": "user", "content": "captured"}]
 
@@ -752,7 +817,9 @@ class TestInvokeSkillContext:
         assert len(received_contexts) == 1
         assert received_contexts[0] is tool_ctx
 
-    async def test_invoke_skill_tool_inner_context_attribute_accessible_in_get_prompt_blocks(self) -> None:
+    async def test_invoke_skill_tool_inner_context_attribute_accessible_in_get_prompt_blocks(
+        self,
+    ) -> None:
         # ToolContext wrapping a non-None inner context makes .context accessible
         received_contexts: list[Any] = []
 
@@ -760,7 +827,9 @@ class TestInvokeSkillContext:
             name = "inner_ctx"
             description = "Reads inner context"
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 received_contexts.append(context)
                 if context is not None:
                     val = context.context.session_id
@@ -795,7 +864,9 @@ class TestInvokeSkillContext:
             name = "agent_capture"
             description = "Captures agent param"
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 received_agents.append(agent)
                 return [{"role": "user", "content": "ok"}]
 
@@ -823,7 +894,9 @@ class TestInvokeSkillContext:
             name = "ctx_and_args"
             description = "Captures both context and args"
 
-            async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(
+                self, context: Any, agent: Any, args: str = ""
+            ) -> list[Any]:
                 received.append((context, args))
                 return [{"role": "user", "content": f"args={args}"}]
 
