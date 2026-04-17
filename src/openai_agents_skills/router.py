@@ -5,9 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import OrderedDict
-from typing import Protocol, runtime_checkable
-
-from openai import AsyncOpenAI
+from typing import Any, Protocol, runtime_checkable
 
 from .skills import Skill
 
@@ -65,9 +63,12 @@ class LLMSkillRouter:
     other OpenAI-compatible endpoint.
 
     Args:
-        client: An ``AsyncOpenAI`` or AsyncOpenAI-compatible async client.
+        client: Any AsyncOpenAI-compatible async client. Must expose a
+            ``client.chat.completions.create`` coroutine with the same signature as
+            ``AsyncOpenAI``. Compatible implementations include ``openai.AsyncOpenAI``,
+            LiteLLM's async client, and any other OpenAI-compatible async client.
         model: Model identifier the client accepts.  Default: ``"gpt-4o-mini"``.
-        cache_size: Maximum number of (message → names) entries in the LRU cache.
+        cache_size: Maximum number of (message -> names) entries in the LRU cache.
             Default: 256.
 
     Example::
@@ -81,7 +82,7 @@ class LLMSkillRouter:
 
     def __init__(
         self,
-        client: AsyncOpenAI,
+        client: Any,
         model: str = "gpt-4o-mini",
         cache_size: int = 256,
     ) -> None:

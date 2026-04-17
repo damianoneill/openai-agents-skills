@@ -103,7 +103,7 @@ class TestFileSkill:
             body="Say hello!",
             file_path=tmp_path / "greet" / "SKILL.md",
         )
-        blocks = await skill.get_prompt_blocks()
+        blocks = await skill.get_prompt_blocks(None, None)
         assert blocks == [{"role": "user", "content": "Say hello!"}]
 
     async def test_get_prompt_blocks_applies_named_arg_substitution(self, tmp_path: Path) -> None:
@@ -114,7 +114,7 @@ class TestFileSkill:
             body="Connect to $host on $port.",
             file_path=tmp_path / "connect" / "SKILL.md",
         )
-        blocks = await skill.get_prompt_blocks(args="myserver 8080")
+        blocks = await skill.get_prompt_blocks(None, None, args="myserver 8080")
         assert blocks[0]["content"] == "Connect to myserver on 8080."
 
     async def test_get_prompt_blocks_applies_variable_substitution(self, tmp_path: Path) -> None:
@@ -124,7 +124,7 @@ class TestFileSkill:
             file_path=tmp_path / "run" / "SKILL.md",
             variables={"RUN_ID": "abc-123"},
         )
-        blocks = await skill.get_prompt_blocks()
+        blocks = await skill.get_prompt_blocks(None, None)
         assert blocks[0]["content"] == "Run ID is abc-123."
 
     async def test_get_prompt_blocks_no_args_returns_body_unchanged(self, tmp_path: Path) -> None:
@@ -133,7 +133,7 @@ class TestFileSkill:
             body="Static content.",
             file_path=tmp_path / "static" / "SKILL.md",
         )
-        blocks = await skill.get_prompt_blocks()
+        blocks = await skill.get_prompt_blocks(None, None)
         assert blocks[0]["content"] == "Static content."
 
     # ------------------------------------------------------------------
@@ -146,8 +146,8 @@ class TestFileSkill:
             body="Content.",
             file_path=tmp_path / "x" / "SKILL.md",
         )
-        first = await skill.get_prompt_blocks(args="")
-        second = await skill.get_prompt_blocks(args="")
+        first = await skill.get_prompt_blocks(None, None, args="")
+        second = await skill.get_prompt_blocks(None, None, args="")
         assert first is second  # same object reference
 
     async def test_cache_different_args_produce_independent_entries(self, tmp_path: Path) -> None:
@@ -156,8 +156,8 @@ class TestFileSkill:
             body="Value: $val.",
             file_path=tmp_path / "x" / "SKILL.md",
         )
-        blocks_a = await skill.get_prompt_blocks(args="alpha")
-        blocks_b = await skill.get_prompt_blocks(args="beta")
+        blocks_a = await skill.get_prompt_blocks(None, None, args="alpha")
+        blocks_b = await skill.get_prompt_blocks(None, None, args="beta")
         assert blocks_a is not blocks_b
         assert blocks_a[0]["content"] == "Value: alpha."
         assert blocks_b[0]["content"] == "Value: beta."
@@ -168,8 +168,8 @@ class TestFileSkill:
             body="x=$x",
             file_path=tmp_path / "x" / "SKILL.md",
         )
-        empty = await skill.get_prompt_blocks(args="")
-        filled = await skill.get_prompt_blocks(args="hello")
+        empty = await skill.get_prompt_blocks(None, None, args="")
+        filled = await skill.get_prompt_blocks(None, None, args="hello")
         assert empty is not filled
         assert empty[0]["content"] == "x=$x"
         assert filled[0]["content"] == "x=hello"
@@ -402,7 +402,7 @@ class TestLoadSkillsFromDir:
             tmp_path, SkillSource.PROJECT, variables={"RUN_ID": "xyz"}
         )
         assert len(results) == 1
-        blocks = await results[0][0].get_prompt_blocks()
+        blocks = await results[0][0].get_prompt_blocks(None, None)
         assert "xyz" in blocks[0]["content"]
 
     async def test_skill_missing_description_is_skipped(self, tmp_path: Path) -> None:
@@ -426,7 +426,7 @@ class TestLoadSkillsFromDir:
         skill_map = {skill.name: skill for skill, _ in results}
         assert "with-args" in skill_map
         wa = skill_map["with-args"]
-        blocks = await wa.get_prompt_blocks(args="myhost 9090")
+        blocks = await wa.get_prompt_blocks(None, None, args="myhost 9090")
         assert "myhost" in blocks[0]["content"]
         assert "9090" in blocks[0]["content"]
 
@@ -550,7 +550,7 @@ class TestLoadAllSkills:
         )
         registry = await load_all_skills(cwd=tmp_path, config=config)
         skill = registry.get("var-skill")
-        blocks = await skill.get_prompt_blocks()
+        blocks = await skill.get_prompt_blocks(None, None)
         assert "test-42" in blocks[0]["content"]
 
     @pytest.mark.skipif(os.name == "nt", reason="symlinks may require privileges on Windows")
@@ -626,7 +626,7 @@ class TestManifestIntegration:
             description = "Has tools."
             allowed_tools: list[str] = ["alpha", "beta"]
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return []
 
         manifest = _build_manifest([ToolySkill()])
@@ -640,7 +640,7 @@ class TestManifestIntegration:
             description = "Hidden."
             user_invocable = False
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return []
 
         manifest = _build_manifest([HiddenSkill()])

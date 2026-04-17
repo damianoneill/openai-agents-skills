@@ -21,7 +21,7 @@ class _AlwaysOnSkill(Skill):
     description = "Always injects."
     when_to_use = ""
 
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+    async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [{"role": "user", "content": "always on content"}]
 
 
@@ -32,7 +32,7 @@ class _RoutableSkill(Skill):
     description = "Routable skill."
     when_to_use = "Use when the user asks about routing topics."
 
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+    async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [{"role": "user", "content": "routed content"}]
 
 
@@ -43,10 +43,10 @@ class _DisabledSkill(Skill):
     description = "Never active."
     when_to_use = ""
 
-    def is_enabled(self) -> bool:
+    def is_enabled(self, context=None, agent=None) -> bool:
         return False
 
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+    async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [{"role": "user", "content": "should not appear"}]
 
 
@@ -57,7 +57,7 @@ class _SecondAlwaysOnSkill(Skill):
     description = "Second always-on skill."
     when_to_use = ""
 
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+    async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [{"role": "user", "content": "second content"}]
 
 
@@ -66,7 +66,7 @@ class _RoutableB(Skill):
     description = "B"
     when_to_use = "Use for B."
 
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+    async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return []
 
 
@@ -146,7 +146,7 @@ class TestRegisterGetUnregister:
             name = ""
             description = "No name."
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return []
 
         registry = SkillRegistry()
@@ -160,7 +160,7 @@ class TestRegisterGetUnregister:
             name = "   "
             description = "Whitespace name."
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return []
 
         registry = SkillRegistry()
@@ -290,10 +290,10 @@ class TestGetAlwaysOn:
             def __init__(self, active: bool) -> None:
                 self._active = active
 
-            def is_enabled(self) -> bool:
+            def is_enabled(self, context=None, agent=None) -> bool:
                 return self._active
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return []
 
         registry = SkillRegistry()
@@ -452,10 +452,10 @@ class TestSelectForMessageWithRouter:
             description = "Disabled but routable."
             when_to_use = "Use when routing."
 
-            def is_enabled(self) -> bool:
+            def is_enabled(self, context=None, agent=None) -> bool:
                 return False
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return []
 
         router = MockRouter(names=["disabled_routable"])

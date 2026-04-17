@@ -155,6 +155,8 @@ async def _collect_blocks(
     skills: list[Skill],
     seen: set[str],
     on_error: Callable[[Skill, Exception], None],
+    context: RunContextWrapper[Any] | None,
+    agent: Agent[Any] | None,
 ) -> list[Any]:
     """Iterate *skills*, skip duplicates and disabled ones, collect prompt blocks.
 
@@ -167,6 +169,8 @@ async def _collect_blocks(
         skills: Deduplicated candidate skills.
         seen: The ``RunState.injected_this_call`` set shared across hook instances.
         on_error: Error handler called when ``get_prompt_blocks`` raises.
+        context: The current run context, or ``None`` if not available.
+        agent: The current agent, or ``None`` if not available.
 
     Returns:
         Flat list of prompt blocks to prepend to ``input_items``.
@@ -175,13 +179,13 @@ async def _collect_blocks(
     for skill in skills:
         if skill.name in seen:
             continue
-        if not skill.is_enabled():
+        if not skill.is_enabled(context, agent):
             continue
         # Add to seen before the await so that a concurrent hook sees the name
         # and skips the skill, preventing duplicate injection on the same LLM call.
         seen.add(skill.name)
         try:
-            blocks = await skill.get_prompt_blocks()
+            blocks = await skill.get_prompt_blocks(context, agent)
             all_blocks.extend(blocks)
         except Exception as exc:
             # Remove from seen on error so the skill retries on the next turn.
@@ -194,6 +198,8 @@ def _resolve_candidates(
     direct_skills: list[Skill],
     registry: SkillRegistry | None,
     routed: list[Skill],
+    context: RunContextWrapper[Any] | None = None,
+    agent: Agent[Any] | None = None,
 ) -> list[Skill]:
     """Merge direct skills, always-on registry skills, and routed skills.
 
@@ -201,6 +207,8 @@ def _resolve_candidates(
         direct_skills: Skills passed directly to the hook constructor.
         registry: Optional registry to query for always-on skills.
         routed: Skills the router selected for the current message.
+        context: The current run context, or ``None`` if not available.
+        agent: The current agent, or ``None`` if not available.
 
     Returns:
         Deduplicated candidate list.  Registry skills win over direct skills on
@@ -208,7 +216,7 @@ def _resolve_candidates(
     """
     base: list[Skill]
     if registry is not None:
-        always_on = registry.get_always_on()
+        always_on = registry.get_always_on(context, agent)
         base = _deduplicate([*direct_skills, *always_on])
     else:
         base = list(direct_skills)
@@ -270,6 +278,9 @@ async def _drain_pending(
     if not state.pending_skills:
         return []
 
+    context = state.last_context
+    agent = state.last_agent
+
     # Claim each skill synchronously (no await) so that a concurrent caller
     # finds an empty pending list and an already-populated injected_this_call.
     to_drain: list[Skill] = []
@@ -284,10 +295,10 @@ async def _drain_pending(
 
     all_blocks: list[Any] = []
     for skill in to_drain:
-        if not skill.is_enabled():
+        if not skill.is_enabled(context, agent):
             continue
         try:
-            blocks = await skill.get_prompt_blocks()
+            blocks = await skill.get_prompt_blocks(context, agent)
             all_blocks.extend(blocks)
         except Exception as exc:
             # Remove from seen on error so the skill can retry next turn.
@@ -332,7 +343,12 @@ class _SkillInjectionMixin:
         self._on_error = on_skill_error if on_skill_error is not None else _default_on_skill_error
         self._max_manifest_skills = max_manifest_skills
 
-    async def _do_llm_start(self, input_items: list[Any]) -> None:
+    async def _do_llm_start(
+        self,
+        context: RunContextWrapper[Any] | None,
+        agent: Agent[Any] | None,
+        input_items: list[Any],
+    ) -> None:
         """Core injection logic shared by both hook classes.
 
         Builds the optional first-call manifest, routes the message to select
@@ -341,6 +357,8 @@ class _SkillInjectionMixin:
         *input_items*.
         """
         state = _get_run_state()
+        state.last_context = context
+        state.last_agent = agent
 
         manifest_blocks: list[Any] = _maybe_build_manifest_blocks(
             state, self._registry, self._max_manifest_skills
@@ -350,17 +368,24 @@ class _SkillInjectionMixin:
         if self._registry is not None:
             routing_ctx = _extract_routing_context(input_items, turns=self._routing_context_turns)
             if routing_ctx:
-                routed = await self._registry.select_for_message(routing_ctx)
+                routed = await self._registry.select_for_message(routing_ctx, context, agent)
 
-        candidates = _resolve_candidates(self._skills, self._registry, routed)
-        skill_blocks = await _collect_blocks(candidates, state.injected_this_call, self._on_error)
+        candidates = _resolve_candidates(self._skills, self._registry, routed, context, agent)
+        skill_blocks = await _collect_blocks(
+            candidates, state.injected_this_call, self._on_error, context, agent
+        )
 
         # Drain skills queued by tool-result or post-turn triggers.
         pending_blocks = await _drain_pending(state, self._on_error)
 
         input_items[0:0] = manifest_blocks + skill_blocks + pending_blocks
 
-    def _do_tool_end(self, tool_name: str) -> None:
+    def _do_tool_end(
+        self,
+        tool_name: str,
+        context: RunContextWrapper[Any] | None,
+        agent: Agent[Any] | None,
+    ) -> None:
         """Queue skills triggered by the completion of a named tool.
 
         Looks up skills whose ``triggers_after_tools`` includes *tool_name* and
@@ -374,17 +399,23 @@ class _SkillInjectionMixin:
 
         Args:
             tool_name: The name of the tool that just finished executing.
+            context: The current run context, or ``None`` if not available.
+            agent: The current agent, or ``None`` if not available.
         """
         if self._registry is None:
             return
         state = _get_run_state()
         pending_names = {s.name for s in state.pending_skills}
-        for skill in self._registry.get_triggered_by_tool(tool_name):
+        for skill in self._registry.get_triggered_by_tool(tool_name, context, agent):
             if skill.name not in pending_names:
                 state.pending_skills.append(skill)
                 pending_names.add(skill.name)
 
-    def _do_llm_end(self) -> None:
+    def _do_llm_end(
+        self,
+        context: RunContextWrapper[Any] | None,
+        agent: Agent[Any] | None,
+    ) -> None:
         """Clear the per-call guard and queue post-turn triggered skills.
 
         Called from ``on_llm_end`` in both hook classes after every LLM
@@ -402,13 +433,17 @@ class _SkillInjectionMixin:
         Deduplication is name-based so that both :class:`SkillHooks` and
         :class:`RunSkillHooks` calling this method for the same LLM response do
         not enqueue the same post-turn skill twice.
+
+        Args:
+            context: The current run context, or ``None`` if not available.
+            agent: The current agent, or ``None`` if not available.
         """
         state = _get_run_state()
         state.injected_this_call.clear()
         if self._registry is None:
             return
         pending_names = {s.name for s in state.pending_skills}
-        for skill in self._registry.get_post_turn():
+        for skill in self._registry.get_post_turn(context, agent):
             if skill.name not in pending_names:
                 state.pending_skills.append(skill)
                 pending_names.add(skill.name)
@@ -502,7 +537,7 @@ class SkillHooks(AgentHooks, _SkillInjectionMixin):
             input_items: Mutable list of input items.  Blocks prepended here are
                 seen by the model.
         """
-        await self._do_llm_start(input_items)
+        await self._do_llm_start(context, agent, input_items)
 
     async def on_tool_end(
         self,
@@ -523,7 +558,7 @@ class SkillHooks(AgentHooks, _SkillInjectionMixin):
             tool: The tool that finished.  Its ``.name`` attribute identifies it.
             result: The string result returned by the tool (not used directly).
         """
-        self._do_tool_end(tool.name)
+        self._do_tool_end(tool.name, context, agent)
 
     async def on_llm_end(
         self,
@@ -539,7 +574,7 @@ class SkillHooks(AgentHooks, _SkillInjectionMixin):
         for injection at the start of the next turn.  The manifest flag is not
         cleared — the manifest is injected exactly once per run.
         """
-        self._do_llm_end()
+        self._do_llm_end(context, agent)
 
 
 # ---------------------------------------------------------------------------
@@ -609,7 +644,7 @@ class RunSkillHooks(RunHooks, _SkillInjectionMixin):
         input_items: list[Any],
     ) -> None:
         """Prepend skill prompt blocks for all agents in the run."""
-        await self._do_llm_start(input_items)
+        await self._do_llm_start(context, agent, input_items)
 
     async def on_tool_end(
         self,
@@ -631,7 +666,7 @@ class RunSkillHooks(RunHooks, _SkillInjectionMixin):
             tool: The tool that finished.  Its ``.name`` attribute identifies it.
             result: The string result returned by the tool (not used directly).
         """
-        self._do_tool_end(tool.name)
+        self._do_tool_end(tool.name, context, agent)
 
     async def on_llm_end(
         self,
@@ -647,7 +682,7 @@ class RunSkillHooks(RunHooks, _SkillInjectionMixin):
         for injection at the start of the next turn.  The manifest flag is not
         cleared — the manifest is injected exactly once per run.
         """
-        self._do_llm_end()
+        self._do_llm_end(context, agent)
 
 
 # ---------------------------------------------------------------------------
@@ -689,7 +724,7 @@ def make_invoke_skill_tool(
     """
 
     @function_tool(strict_mode=False)
-    async def invoke_skill(skill_name: str, args: str = "") -> str:
+    async def invoke_skill(ctx: RunContextWrapper[Any], skill_name: str, args: str = "") -> str:
         """Invoke a skill by name and return its prompt content as text.
 
         Args:
@@ -705,7 +740,7 @@ def make_invoke_skill_tool(
         except KeyError:
             available = ", ".join(registry.skill_names) or "(none)"
             return f"Unknown skill: {skill_name!r}. Available: {available}"
-        blocks = await skill.get_prompt_blocks(args)
+        blocks = await skill.get_prompt_blocks(ctx, None, args)
         return "\n".join(
             block.get("content", "") if isinstance(block, dict) else str(block) for block in blocks
         )

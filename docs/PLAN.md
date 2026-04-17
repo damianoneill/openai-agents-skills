@@ -1115,6 +1115,24 @@ All Phase 5 items were delivered incrementally across earlier phases:
 
 ---
 
+## Phase 6 — Context-aware Skills
+
+`get_prompt_blocks` and `is_enabled` now receive the current `RunContextWrapper` and
+`Agent` from the hook on every call. This allows skills to:
+
+- Inject dynamic content (e.g. `context.context.org_id`) without modifying the
+  agent’s system prompt
+- Gate injection on runtime state such as feature flags or team membership
+
+Both parameters default to `None` — skills must handle the `None` case for calls
+outside a live agent run.
+
+`RunState` stores `last_context` and `last_agent` from each `on_llm_start` so that
+deferred paths (`_drain_pending`, post-turn triggers) have access to the most recent
+context without threading it through every intermediate call.
+
+---
+
 ## Module Layout
 
 ```
@@ -1160,3 +1178,4 @@ tests/
 | **3 — File skills**         | ✅ Complete | SKILL.md loading, frontmatter parsing, arg substitution, user + project dirs       | —                                      |
 | **4 — Advanced triggering** | ✅ Complete | Tool-result triggers, post-turn skills                                             | `AgentHooks.on_tool_end`, `on_llm_end` |
 | **5 — Hardening**           | ✅ Complete | Source trust levels, path validation, coverage, docs                               | —                                      |
+| **6 — Context** | ✅ Complete | `get_prompt_blocks(context, agent, args)`, `is_enabled(context, agent)` — skills receive the SDK’s `RunContextWrapper` and `Agent` on every call | — |

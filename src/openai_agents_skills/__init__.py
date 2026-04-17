@@ -13,7 +13,7 @@ Usage::
         name = "concise"
         description = "Instructs the agent to be concise."
 
-        async def get_prompt_blocks(self, args: str = "") -> list:
+        async def get_prompt_blocks(self, context, agent, args=""):
             return [{"role": "user", "content": "Be concise in all responses."}]
 
     agent = Agent(

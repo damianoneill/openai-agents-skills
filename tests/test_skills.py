@@ -16,7 +16,7 @@ from openai_agents_skills import Skill
 class _MinimalSkill(Skill):
     """Smallest valid Skill subclass — used only to test inherited defaults."""
 
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+    async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return []
 
 
@@ -76,10 +76,10 @@ class TestSkillSubclass:
             name = "concise"
             description = "Be concise."
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return [{"role": "user", "content": "Be concise."}]
 
-        blocks = await ConciseSkill().get_prompt_blocks()
+        blocks = await ConciseSkill().get_prompt_blocks(None, None)
         assert blocks == [{"role": "user", "content": "Be concise."}]
 
     async def test_get_prompt_blocks_receives_args(self) -> None:
@@ -87,10 +87,10 @@ class TestSkillSubclass:
             name = "echo"
             description = "Echoes args into a block."
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return [{"role": "user", "content": args}]
 
-        blocks = await EchoSkill().get_prompt_blocks(args="hello world")
+        blocks = await EchoSkill().get_prompt_blocks(None, None, args="hello world")
         assert blocks[0]["content"] == "hello world"
 
     async def test_get_prompt_blocks_default_args_is_empty_string(self) -> None:
@@ -100,11 +100,11 @@ class TestSkillSubclass:
             name = "recording"
             description = "Records args value."
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 received.append(args)
                 return []
 
-        await RecordingSkill().get_prompt_blocks()
+        await RecordingSkill().get_prompt_blocks(None, None)
         assert received == [""]
 
     async def test_get_prompt_blocks_can_return_multiple_blocks(self) -> None:
@@ -112,13 +112,13 @@ class TestSkillSubclass:
             name = "multi"
             description = "Returns multiple blocks."
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return [
                     {"role": "user", "content": "block one"},
                     {"role": "user", "content": "block two"},
                 ]
 
-        blocks = await MultiSkill().get_prompt_blocks()
+        blocks = await MultiSkill().get_prompt_blocks(None, None)
         assert len(blocks) == 2
         assert blocks[0]["content"] == "block one"
         assert blocks[1]["content"] == "block two"
@@ -128,20 +128,20 @@ class TestSkillSubclass:
             name = "empty"
             description = "Returns no blocks."
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return []
 
-        assert await EmptySkill().get_prompt_blocks() == []
+        assert await EmptySkill().get_prompt_blocks(None, None) == []
 
     def test_subclass_can_disable_via_is_enabled(self) -> None:
         class DisabledSkill(Skill):
             name = "disabled"
             description = "Always disabled."
 
-            def is_enabled(self) -> bool:
+            def is_enabled(self, context=None, agent=None) -> bool:
                 return False
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return []
 
         assert DisabledSkill().is_enabled() is False
@@ -154,10 +154,10 @@ class TestSkillSubclass:
             def __init__(self, active: bool) -> None:
                 self._active = active
 
-            def is_enabled(self) -> bool:
+            def is_enabled(self, context=None, agent=None) -> bool:
                 return self._active
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return []
 
         assert ToggleSkill(active=True).is_enabled() is True
@@ -169,7 +169,7 @@ class TestSkillSubclass:
             description = "My description."
             when_to_use = "Use when you need my_skill."
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return []
 
         sk = NamedSkill()
@@ -189,7 +189,7 @@ class TestSkillRepr:
             name = "my_skill"
             description = "A test skill."
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return []
 
         result = repr(MySkill())
@@ -201,7 +201,7 @@ class TestSkillRepr:
         """A skill with the default empty name still has a valid repr."""
 
         class NoNameSkill(Skill):
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return []
 
         result = repr(NoNameSkill())
@@ -214,7 +214,7 @@ class TestSkillRepr:
             name = "citation"
             description = "Cite sources."
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return []
 
         assert repr(CitationSkill()) == "CitationSkill(name='citation')"

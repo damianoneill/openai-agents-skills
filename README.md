@@ -90,7 +90,7 @@ class ReplyInBulletsSkill(Skill):
     description = "Instructs the agent to respond using bullet points."
     when_to_use = "Use when structured, scannable output is preferred."
 
-    async def get_prompt_blocks(self, args: str = "") -> list:
+    async def get_prompt_blocks(self, context, agent, args=""):
         return [{"role": "user", "content": "Always respond using bullet points."}]
 ```
 
@@ -101,6 +101,27 @@ class ReplyInBulletsSkill(Skill):
 | `name`        | `str` | Unique identifier                                   |
 | `description` | `str` | Human-readable summary                              |
 | `when_to_use` | `str` | Prose trigger description (used by Phase 2 routing) |
+
+### Context-aware skills
+
+Both `get_prompt_blocks` and `is_enabled` receive the SDK's `RunContextWrapper` and
+`Agent` from the hook, so skills can inject dynamic content or gate themselves on
+runtime state:
+
+```python
+class OrgContextSkill(Skill):
+    name = "org-context"
+    description = "Injects the current organisation ID."
+
+    async def get_prompt_blocks(self, context, agent, args=""):
+        org_id = context.context.org_id if context else None
+        if not org_id:
+            return []
+        return [{"role": "user", "content": f"Your org_id is `{org_id}`."}]
+```
+
+Skills must handle `context=None` and `agent=None` — both are `None` when the skill
+is called outside a live agent run (e.g. via `make_invoke_skill_tool` or in tests).
 
 ### Gating a skill with `is_enabled`
 
@@ -114,7 +135,7 @@ class FeatureFlagSkill(Skill):
     name = "feature_flag_skill"
     description = "Only active when ENABLE_SKILL=1."
 
-    def is_enabled(self) -> bool:
+    def is_enabled(self, context=None, agent=None) -> bool:
         return os.getenv("ENABLE_SKILL") == "1"
 
     async def get_prompt_blocks(self, args: str = "") -> list:

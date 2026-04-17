@@ -13,9 +13,11 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from agents import Agent, RunContextWrapper
+
     from .skills import Skill
 
 
@@ -41,12 +43,19 @@ class RunState:
             post-turn triggers (on_llm_end).  Drained and cleared at the next
             on_llm_start.  Run-scoped via ContextVar so concurrent runs cannot
             interfere.
+        last_context: The RunContextWrapper from the most recent on_llm_start call.
+            Stored so that deferred callbacks (_drain_pending) have access to
+            runtime context without requiring it to be threaded through every
+            intermediate function.
+        last_agent: The Agent from the most recent on_llm_start call.
     """
 
     manifest_injected: bool = False
     injected_this_call: set[str] = field(default_factory=set)
     invoke_skill_calls: int = 0
     pending_skills: list[Skill] = field(default_factory=list)
+    last_context: RunContextWrapper[Any] | None = None
+    last_agent: Agent[Any] | None = None
 
 
 _run_state: ContextVar[RunState | None] = ContextVar("_run_state", default=None)

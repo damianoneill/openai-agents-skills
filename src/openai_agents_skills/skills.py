@@ -14,9 +14,9 @@ Example::
 
     class CitationSkill(Skill):
         name = "citation"
-        description = "Always cite sources."
+        description = "Always cite sources when making factual claims."
 
-        async def get_prompt_blocks(self, args: str = "") -> list:
+        async def get_prompt_blocks(self, context, agent, args=""):
             return [{"role": "user", "content": "Always cite your sources."}]
 
     agent = Agent(
@@ -31,7 +31,10 @@ Example::
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from agents import Agent, RunContextWrapper
 
 
 class Skill(ABC):
@@ -40,6 +43,11 @@ class Skill(ABC):
     Subclass and override :meth:`get_prompt_blocks` to provide skill content.
     The returned blocks are prepended to the LLM's ``input_items`` list before
     each model invocation by :class:`~openai_agents_skills.hooks.SkillHooks`.
+
+    Both :meth:`get_prompt_blocks` and :meth:`is_enabled` receive the current
+    ``RunContextWrapper`` and ``Agent`` so that skills can inject dynamic content
+    (organisation IDs, user preferences, feature flags) and gate themselves on
+    runtime state without requiring separate configuration.
 
     Class attributes:
 
@@ -74,7 +82,7 @@ class Skill(ABC):
             name = "reply_in_bullets"
             description = "Instructs the agent to respond using bullet points."
 
-            async def get_prompt_blocks(self, args: str = "") -> list:
+            async def get_prompt_blocks(self, context, agent, args=""):
                 return [{"role": "user", "content": "Always respond using bullet points."}]
     """
 
@@ -89,12 +97,20 @@ class Skill(ABC):
     def __repr__(self) -> str:
         return f"{type(self).__name__}(name={self.name!r})"
 
-    def is_enabled(self) -> bool:
+    def is_enabled(
+        self,
+        context: RunContextWrapper[Any] | None = None,
+        agent: Agent[Any] | None = None,
+    ) -> bool:
         """Return True if this skill should be injected on the current call.
 
         Override to gate a skill dynamically on feature flags, runtime context,
         or any other condition. Disabled skills are silently skipped by
         :class:`~openai_agents_skills.hooks.SkillHooks`.
+
+        Args:
+            context: The current run context, or ``None`` if not available.
+            agent: The current agent, or ``None`` if not available.
 
         Returns:
             True if the skill is active; False to suppress injection.
@@ -102,14 +118,25 @@ class Skill(ABC):
         return True
 
     @abstractmethod
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+    async def get_prompt_blocks(
+        self,
+        context: RunContextWrapper[Any] | None,
+        agent: Agent[Any] | None,
+        args: str = "",
+    ) -> list[Any]:
         """Return prompt blocks to prepend to the LLM's input_items.
 
         Each block should be a response-input-item dict, for example::
 
             {"role": "user", "content": "Always be concise."}
 
+        Both ``context`` and ``agent`` are ``None`` when called outside a live
+        agent run (e.g. in tests or via the ``invoke_skill`` tool).
+        Implementations that depend on them must handle the ``None`` case.
+
         Args:
+            context: The current ``RunContextWrapper``, or ``None``.
+            agent: The current ``Agent``, or ``None``.
             args: Optional space-separated arguments passed to the skill.
                   Used by file-based skills for ``$arg_name`` substitution.
                   Bundled skills may ignore this parameter.

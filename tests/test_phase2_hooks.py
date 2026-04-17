@@ -45,10 +45,10 @@ class _SimpleSkill(Skill):
         self._content = content
         self._enabled = enabled
 
-    def is_enabled(self) -> bool:
+    def is_enabled(self, context=None, agent=None) -> bool:
         return self._enabled
 
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+    async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [{"role": "user", "content": self._content}]
 
 
@@ -64,7 +64,7 @@ class _MultiBlockSkill(Skill):
         self._block_a = block_a
         self._block_b = block_b
 
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+    async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [
             {"role": "user", "content": self._block_a},
             {"role": "user", "content": self._block_b},
@@ -79,7 +79,7 @@ class _ErrorSkill(Skill):
         self.description = "Always raises."
         self.when_to_use = ""
 
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+    async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         raise ValueError(f"Skill {self.name!r} intentionally failed")
 
 
@@ -968,7 +968,7 @@ class TestInvokeSkillTool:
             description = "Echoes args."
             when_to_use = ""
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return [{"role": "user", "content": f"args={args}"}]
 
         registry = SkillRegistry()

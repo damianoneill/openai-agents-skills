@@ -22,7 +22,7 @@ class _AlwaysOnSkill(Skill):
         if name_override is not None:
             self.name = name_override
 
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+    async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [{"role": "user", "content": self._content}]
 
 
@@ -32,10 +32,10 @@ class _DisabledSkill(Skill):
     name = "disabled"
     description = "Never injects."
 
-    def is_enabled(self) -> bool:
+    def is_enabled(self, context=None, agent=None) -> bool:
         return False
 
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+    async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [{"role": "user", "content": "should not appear"}]
 
 
@@ -45,7 +45,7 @@ class _MultiBlockSkill(Skill):
     name = "multi_block"
     description = "Returns two blocks."
 
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+    async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [
             {"role": "user", "content": "block one"},
             {"role": "user", "content": "block two"},

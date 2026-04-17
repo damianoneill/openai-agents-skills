@@ -34,13 +34,17 @@ import logging
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from .registry import SkillRegistry
 from .skills import Skill
 from .substitution import substitute_args
+
+if TYPE_CHECKING:
+    from agents import Agent, RunContextWrapper
+
 
 _log = logging.getLogger(__name__)
 
@@ -197,7 +201,12 @@ class FileSkill(Skill):
         self._variables: dict[str, str] = dict(variables) if variables else {}
         self._cache: dict[str, list[Any]] = {}
 
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+    async def get_prompt_blocks(
+        self,
+        context: RunContextWrapper[Any] | None,
+        agent: Agent[Any] | None,
+        args: str = "",
+    ) -> list[Any]:
         """Return the skill body as a user-role prompt block.
 
         Applies :func:`~openai_agents_skills.substitution.substitute_args` to the

@@ -22,7 +22,7 @@ class _RoutableSkill(Skill):
     description = "Does topic A things."
     when_to_use = "Use when the user asks about topic A."
 
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+    async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [{"role": "user", "content": "skill_a content"}]
 
 
@@ -33,7 +33,7 @@ class _AnotherRoutableSkill(Skill):
     description = "Does topic B things."
     when_to_use = "Use when the user asks about topic B."
 
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+    async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [{"role": "user", "content": "skill_b content"}]
 
 
@@ -44,7 +44,7 @@ class _NonRoutableSkill(Skill):
     description = "Always on."
     when_to_use = ""
 
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+    async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [{"role": "user", "content": "non_routable content"}]
 
 
@@ -152,7 +152,7 @@ class TestLLMSkillRouterSelect:
             description = "OK"
             when_to_use = "Use when OK."
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return []
 
         result = await router.select("test", [_OkSkill()])

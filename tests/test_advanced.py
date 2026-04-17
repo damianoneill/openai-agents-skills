@@ -39,10 +39,10 @@ class _SimpleSkill(Skill):
         self.triggers_after_tools = list(triggers_after_tools or [])
         self.triggers_after_turn = triggers_after_turn
 
-    def is_enabled(self) -> bool:
+    def is_enabled(self, context=None, agent=None) -> bool:
         return self._enabled
 
-    async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+    async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [{"role": "user", "content": self._content}]
 
 
@@ -491,7 +491,7 @@ class TestDrainPending:
             name = "broken"
             description = "always raises"
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 raise RuntimeError("boom")
 
         errors: list[tuple[Skill, Exception]] = []
@@ -510,7 +510,7 @@ class TestDrainPending:
             name = "broken"
             description = "raises"
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 raise RuntimeError("boom")
 
         state = RunState()
@@ -529,7 +529,7 @@ class TestDrainPending:
             name = "counted"
             description = "counts calls"
 
-            async def get_prompt_blocks(self, args: str = "") -> list[Any]:
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 nonlocal call_count
                 call_count += 1
                 await asyncio.sleep(0)  # yield to let the other coroutine run
