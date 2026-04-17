@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from openai_agents_skills import LLMSkillRouter, Skill, SkillRouter
+from openai_agents_skills import BaseSkillRouter, LLMSkillRouter, Skill, SkillRouter
+from openai_agents_skills.router import _extract_json
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -240,7 +241,7 @@ class TestLLMSkillRouterErrorHandling:
         with caplog.at_level(logging.WARNING, logger="openai_agents_skills.router"):
             await router.select("test message", [_RoutableSkill()])
 
-        assert any("LLMSkillRouter.select failed" in r.getMessage() for r in caplog.records)
+        assert any("SkillRouter.select failed" in r.getMessage() for r in caplog.records)
 
     async def test_malformed_json_returns_empty_list(self) -> None:
         mock_client, _ = _make_mock_client("not-json{{{{")
@@ -250,14 +251,15 @@ class TestLLMSkillRouterErrorHandling:
 
         assert result == []
 
-    async def test_malformed_json_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_malformed_json_no_warning_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        """_extract_json converts unrecognised input to '{}' silently — no warning expected."""
         mock_client, _ = _make_mock_client("not-json{{{{")
         router = LLMSkillRouter(client=mock_client, model="gpt-4o-mini")
 
         with caplog.at_level(logging.WARNING, logger="openai_agents_skills.router"):
             await router.select("test message", [_RoutableSkill()])
 
-        assert any("LLMSkillRouter.select failed" in r.getMessage() for r in caplog.records)
+        assert not any("SkillRouter.select failed" in r.getMessage() for r in caplog.records)
 
     async def test_non_dict_json_returns_empty_list(self) -> None:
         """A JSON array at the top level is invalid — must return []."""
@@ -268,14 +270,15 @@ class TestLLMSkillRouterErrorHandling:
 
         assert result == []
 
-    async def test_non_dict_json_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_non_dict_json_no_warning_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        """_extract_json finds no JSON object in a bare array — falls back to '{}' silently."""
         mock_client, _ = _make_mock_client('["skill_a"]')
         router = LLMSkillRouter(client=mock_client, model="gpt-4o-mini")
 
         with caplog.at_level(logging.WARNING, logger="openai_agents_skills.router"):
             await router.select("test message", [_RoutableSkill()])
 
-        assert any("LLMSkillRouter.select failed" in r.getMessage() for r in caplog.records)
+        assert not any("SkillRouter.select failed" in r.getMessage() for r in caplog.records)
 
     async def test_missing_selected_key_returns_empty_list(self) -> None:
         """JSON object without the ``selected`` key yields an empty result."""
@@ -433,3 +436,250 @@ class TestLLMSkillRouterCacheSizeZero:
         # Should complete without any exception.
         result = await router.select("any message", skills)
         assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# _extract_json — unit tests for the JSON extraction helper
+# ---------------------------------------------------------------------------
+
+
+class TestExtractJson:
+    def test_none_returns_empty_object(self) -> None:
+        assert _extract_json(None) == "{}"
+
+    def test_empty_string_returns_empty_object(self) -> None:
+        assert _extract_json("") == "{}"
+
+    def test_plain_json_returned_as_is(self) -> None:
+        raw = '{"selected": ["skill_a"]}'
+        assert _extract_json(raw) == raw
+
+    def test_plain_json_with_empty_selected(self) -> None:
+        raw = '{"selected": []}'
+        assert _extract_json(raw) == raw
+
+    def test_prose_wrapped_json_extracts_object(self) -> None:
+        raw = 'Based on the message, here are the skills: {"selected": ["skill_a"]}'
+        result = _extract_json(raw)
+        assert result == '{"selected": ["skill_a"]}'
+
+    def test_prose_with_newline_before_json(self) -> None:
+        raw = 'I will select the relevant skills.\n\n{"selected": ["skill_b"]}'
+        result = _extract_json(raw)
+        assert result == '{"selected": ["skill_b"]}'
+
+    def test_no_json_in_prose_returns_empty_object(self) -> None:
+        assert _extract_json("There are no matching skills.") == "{}"
+
+    def test_thinking_block_list_extracts_text_json(self) -> None:
+        """Extended-thinking models return a list of typed content blocks."""
+        content = [
+            {"type": "thinking", "thinking": "Let me analyse the user message..."},
+            {"type": "text", "text": '{"selected": ["router-diagnostics"]}'},
+        ]
+        result = _extract_json(content)
+        assert result == '{"selected": ["router-diagnostics"]}'
+
+    def test_thinking_block_list_with_empty_selection(self) -> None:
+        content = [
+            {"type": "thinking", "thinking": "Nothing relevant."},
+            {"type": "text", "text": '{"selected": []}'},
+        ]
+        result = _extract_json(content)
+        assert result == '{"selected": []}'
+
+    def test_list_with_non_dict_entries_handled_gracefully(self) -> None:
+        """Non-dict entries in the content list are converted via str()."""
+        content = ["some string", '{"selected": ["x"]}']
+        result = _extract_json(content)
+        # The joined string contains the JSON — it should be extractable
+        assert '"selected"' in result
+
+    def test_whitespace_only_string_returns_empty_object(self) -> None:
+        assert _extract_json("   \n\t  ") == "{}"
+
+    def test_integer_content_returns_empty_object(self) -> None:
+        assert _extract_json(42) == "{}"
+
+
+# ---------------------------------------------------------------------------
+# LLMSkillRouter — response_format flag
+# ---------------------------------------------------------------------------
+
+
+class TestLLMSkillRouterResponseFormat:
+    async def test_default_does_not_pass_response_format(self) -> None:
+        """By default, response_format must NOT be sent to the client."""
+        mock_client, mock_create = _make_mock_client('{"selected": ["skill_a"]}')
+        router = LLMSkillRouter(client=mock_client, model="gpt-4o-mini")
+
+        await router.select("test message", [_RoutableSkill()])
+
+        call_kwargs = mock_create.call_args[1]
+        assert "response_format" not in call_kwargs
+
+    async def test_use_response_format_true_passes_json_object(self) -> None:
+        """When use_response_format=True, response_format is forwarded to the client."""
+        mock_client, mock_create = _make_mock_client('{"selected": ["skill_a"]}')
+        router = LLMSkillRouter(
+            client=mock_client, model="gpt-4o-mini", use_response_format=True
+        )
+
+        await router.select("test message", [_RoutableSkill()])
+
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs.get("response_format") == {"type": "json_object"}
+
+    async def test_provider_error_on_response_format_returns_empty_list(self) -> None:
+        """Simulates a provider raising UnsupportedParamsError for response_format."""
+        mock_client, _ = _make_error_client(
+            Exception("bedrock does not support parameters: ['response_format']")
+        )
+        router = LLMSkillRouter(
+            client=mock_client, model="some-bedrock-model", use_response_format=True
+        )
+
+        result = await router.select("test message", [_RoutableSkill()])
+
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# LLMSkillRouter — prose-wrapped and thinking-block responses (Issue 2 regression)
+# ---------------------------------------------------------------------------
+
+
+class TestLLMSkillRouterProseAndThinkingResponses:
+    async def test_prose_wrapped_json_is_parsed_correctly(self) -> None:
+        """Model returns prose before the JSON object — must still parse."""
+        prose_response = (
+            "Based on the user's message about BGP issues, I'll select:\n"
+            '{"selected": ["bgp-troubleshooting"]}'
+        )
+        mock_client, _ = _make_mock_client(prose_response)
+
+        class _BgpSkill(Skill):
+            name = "bgp-troubleshooting"
+            description = "BGP diagnostics."
+            when_to_use = "Use for BGP issues."
+
+            async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
+                return []
+
+        router = LLMSkillRouter(client=mock_client, model="gpt-4o-mini")
+        result = await router.select("BGP session flapping", [_BgpSkill()])
+
+        assert result == ["bgp-troubleshooting"]
+
+    async def test_thinking_block_list_response_is_parsed_correctly(self) -> None:
+        """Extended-thinking models return a list of content blocks — must parse."""
+        thinking_content: list[Any] = [
+            {"type": "thinking", "thinking": "Analysing the message..."},
+            {"type": "text", "text": '{"selected": ["skill_a"]}'},
+        ]
+
+        mock_message = MagicMock()
+        mock_message.content = thinking_content
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+        mock_create = AsyncMock(return_value=mock_response)
+        mock_completions = MagicMock()
+        mock_completions.create = mock_create
+        mock_chat = MagicMock()
+        mock_chat.completions = mock_completions
+        mock_client = MagicMock()
+        mock_client.chat = mock_chat
+
+        router = LLMSkillRouter(client=mock_client, model="gpt-4o-mini")
+        result = await router.select("test message", [_RoutableSkill()])
+
+        assert result == ["skill_a"]
+
+
+# ---------------------------------------------------------------------------
+# BaseSkillRouter — custom subclass conformance
+# ---------------------------------------------------------------------------
+
+
+class TestBaseSkillRouter:
+    def test_base_skill_router_satisfies_skill_router_protocol(self) -> None:
+        """BaseSkillRouter.select satisfies the SkillRouter protocol."""
+
+        class _ConcreteRouter(BaseSkillRouter):
+            async def _call_model(self, prompt: str) -> str:
+                return '{"selected": []}'
+
+        router = _ConcreteRouter()
+        assert isinstance(router, SkillRouter)
+
+    async def test_custom_subclass_routes_correctly(self) -> None:
+        """A minimal _call_model implementation routes skills end-to-end."""
+
+        class _EchoRouter(BaseSkillRouter):
+            """Always selects skill_a."""
+
+            async def _call_model(self, prompt: str) -> str:
+                return '{"selected": ["skill_a"]}'
+
+        router = _EchoRouter()
+        result = await router.select("any message", [_RoutableSkill(), _AnotherRoutableSkill()])
+
+        assert result == ["skill_a"]
+
+    async def test_custom_subclass_prose_response_extracted(self) -> None:
+        """_extract_json is applied to _call_model output for custom subclasses too."""
+
+        class _ProseRouter(BaseSkillRouter):
+            async def _call_model(self, prompt: str) -> str:
+                return 'I selected the following: {"selected": ["skill_b"]}'
+
+        router = _ProseRouter()
+        result = await router.select("some query", [_RoutableSkill(), _AnotherRoutableSkill()])
+
+        assert result == ["skill_b"]
+
+    async def test_call_model_not_implemented_returns_empty_list(self) -> None:
+        """Calling BaseSkillRouter directly (without override) returns [] and logs."""
+        router = BaseSkillRouter()
+
+        result = await router.select("test message", [_RoutableSkill()])
+
+        assert result == []
+
+    async def test_custom_subclass_inherits_lru_cache(self) -> None:
+        """The inherited LRU cache prevents duplicate _call_model calls."""
+        call_count = 0
+
+        class _CountingRouter(BaseSkillRouter):
+            async def _call_model(self, prompt: str) -> str:
+                nonlocal call_count
+                call_count += 1
+                return '{"selected": ["skill_a"]}'
+
+        router = _CountingRouter()
+        skills = [_RoutableSkill()]
+
+        await router.select("same message", skills)
+        await router.select("same message", skills)
+
+        assert call_count == 1
+
+    async def test_custom_subclass_cache_size_zero_disables_cache(self) -> None:
+        """cache_size=0 on a custom subclass bypasses the cache."""
+        call_count = 0
+
+        class _CountingRouter(BaseSkillRouter):
+            async def _call_model(self, prompt: str) -> str:
+                nonlocal call_count
+                call_count += 1
+                return '{"selected": []}'
+
+        router = _CountingRouter(cache_size=0)
+        skills = [_RoutableSkill()]
+
+        await router.select("same message", skills)
+        await router.select("same message", skills)
+
+        assert call_count == 2

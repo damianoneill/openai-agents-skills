@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.1 (Unreleased)
+
+### Fix
+
+- **`LLMSkillRouter`: remove `response_format` default** — `response_format={"type":
+  "json_object"}` is no longer sent by default because it is unsupported by several
+  providers (AWS Bedrock via LiteLLM, some Azure configurations, Ollama).  Use the new
+  `use_response_format=True` constructor flag to opt in explicitly if you need it.
+
+- **`LLMSkillRouter`: robust JSON extraction** — the router no longer raises on
+  prose-wrapped responses or extended-thinking content-block lists (e.g. Claude
+  `claude-haiku-4-5` / `claude-sonnet-4-5`).  A new `_extract_json` helper handles
+  all observed response shapes: plain JSON, JSON embedded in prose, `None` / empty,
+  and `list[dict]` content blocks.
+
+### Feat
+
+- **`BaseSkillRouter`** — new public base class that exposes the shared routing
+  pipeline (prompt building, `_extract_json`, LRU cache).  Subclass it and implement
+  only `_call_model(prompt: str) -> str` to integrate any model provider without
+  re-implementing the boilerplate.  `LLMSkillRouter` is now a thin subclass of
+  `BaseSkillRouter`.  `BaseSkillRouter` is exported from the package top-level.
+
 ## v0.1.0 (2025-01-01)
 
 ### Feat

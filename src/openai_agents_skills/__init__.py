@@ -53,13 +53,14 @@ from ._version import __version__
 from .hooks import RunSkillHooks, SkillHooks, make_invoke_skill_tool
 from .loader import FileSkill, SkillConfig, SkillSource, load_all_skills, load_skills_from_dir
 from .registry import SkillRegistry
-from .router import LLMSkillRouter, SkillRouter
+from .router import BaseSkillRouter, LLMSkillRouter, SkillRouter
 from .skills import Skill
 from .substitution import substitute_args
 
 __all__ = [
     "__version__",
     "FileSkill",
+    "BaseSkillRouter",
     "LLMSkillRouter",
     "RunSkillHooks",
     "Skill",
