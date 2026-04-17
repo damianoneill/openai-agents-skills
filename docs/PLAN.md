@@ -169,10 +169,6 @@ agent = Agent(
 - Prepends all enabled skills' blocks at `on_llm_start`
 - `Skill` subclasses with `is_enabled() == False` are silently skipped
 
-> A `@skill_factory` decorator for static-analysis tooling and package-level discovery
-> is planned for a future phase. It is not included in Phase 1 to avoid shipping a
-> runtime-no-op public API.
-
 ---
 
 ## Phase 2 — Registry & Routing ✅
@@ -760,10 +756,10 @@ Additional directories can be supplied via `SkillConfig.extra_dirs`.
 | `name`           | `str`       | No       | Overrides the directory name as the skill label                                                |
 | `description`    | `str`       | Yes      | Short summary; used in manifest and routing                                                    |
 | `when_to_use`    | `str`       | No       | Prose trigger description with example phrases                                                 |
-| `allowed-tools`  | `list[str]` | No       | Tools this skill may invoke; surfaced in manifest Phase 3, enforced in `context: fork` Phase 6 |
+| `allowed-tools`  | `list[str]` | No       | Tools this skill may invoke; surfaced in manifest (informational only) |
 | `argument-hint`  | `str`       | No       | Human-readable hint, e.g. `"[target] [env]"`                                                   |
 | `arguments`      | `list[str]` | No       | Named args for `$arg_name` substitution in body                                                |
-| `context`        | `inline`    | No       | Default `inline`; `context: fork` is planned for Phase 6                                       |
+| `context`        | `inline`    | No       | Default `inline`                                       |
 | `user-invocable` | `bool`      | No       | Default `true`; `false` hides from manifest                                                    |
 
 ### `FileSkill`
@@ -944,10 +940,8 @@ misconfiguration during development without failing the substitution.
 ### `allowed-tools` manifest surfacing
 
 When a `FileSkill` declares `allowed-tools`, that list is included in the skill's
-manifest entry so the model knows which tools the skill expects to use. This is
-informational in Phase 3 — the agent still has access to all its configured tools.
-Enforcement (restricting the tool set) is deferred to Phase 6 (`context: fork`),
-where the forked agent is constructed with only the declared tools.
+manifest entry so the model knows which tools the skill expects to use.
+The agent still has access to all its configured tools.
 
 ```
 ## Available Skills

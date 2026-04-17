@@ -9,10 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Feat
 
-- **Phase 1 — Core injection:** `Skill` abstract base class, `SkillProtocol` for
-  duck-typed skills, `SkillHooks` (`AgentHooks` subclass) that prepends skill prompt
-  blocks to `input_items` before every LLM call, `is_enabled()` gate, `skill_factory`
-  decorator for metadata tagging.
+- **Phase 1 — Core injection:** `Skill` abstract base class, `SkillHooks`
+  (`AgentHooks` subclass) that prepends skill prompt blocks to `input_items` before
+  every LLM call, `is_enabled()` gate.
 
 - **Phase 2 — Registry & routing:** `SkillRegistry` as the central skill store;
   `SkillRouter` protocol and `LLMSkillRouter` (LRU-cached LLM-based routing via

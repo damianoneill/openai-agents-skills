@@ -143,58 +143,11 @@ agent = Agent(
 
 ---
 
-## `SkillProtocol`
-
-`SkillHooks` accepts any object that satisfies `SkillProtocol` — you do not have to subclass
-`Skill`. Any class with `name: str`, `description: str`, and `async def get_prompt_blocks()`
-qualifies:
-
-```python
-from openai_agents_skills import SkillProtocol, SkillHooks
-
-class MyDuckSkill:
-    name = "duck"
-    description = "Duck-typed skill."
-
-    async def get_prompt_blocks(self, args: str = "") -> list:
-        return [{"role": "user", "content": "Quack."}]
-
-assert isinstance(MyDuckSkill(), SkillProtocol)  # True
-
-hooks = SkillHooks([MyDuckSkill()])
-```
-
-Duck-typed skills have no `is_enabled()` method and are always injected.
-
----
-
-## `@skill_factory` Decorator
-
-Tag factory functions with skill metadata for tooling and discovery (used by Phase 3+).
-This is a forward-looking marker — it has no runtime effect in the current version.
-
-```python
-from openai_agents_skills import skill_factory, Skill
-
-@skill_factory(name="summariser", description="Summarise long documents into bullet points.")
-def make_summariser() -> Skill:
-    return MySummariserSkill()
-
-# Metadata is available without calling the factory:
-print(make_summariser.__skill_name__)         # "summariser"
-print(make_summariser.__skill_description__)  # "Summarise long documents into bullet points."
-
-# Call when you need the Skill instance:
-registry.register(make_summariser())
-```
-
----
-
 ## Roadmap
 
 | Phase               | Status      | What ships                                                               |
 | ------------------- | ----------- | ------------------------------------------------------------------------ |
-| **1 — Proto**       | ✅ Complete | `Skill`, `SkillProtocol`, `SkillHooks`, always-on injection              |
+| **1 — Proto**       | ✅ Complete | `Skill`, `SkillHooks`, always-on injection                               |
 | **2 — Routing**     | ✅ Complete | `SkillRegistry`, LLM-based routing, `invoke_skill` tool, `RunSkillHooks` |
 | **3 — File skills** | ✅ Complete | `FileSkill`, SKILL.md loading, YAML frontmatter, argument substitution   |
 | **4 — Advanced**    | ✅ Complete | Tool-result triggers, post-turn skills                                   |

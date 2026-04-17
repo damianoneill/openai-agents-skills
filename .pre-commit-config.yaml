@@ -12,6 +12,8 @@ repos:
       - id: mypy
         additional_dependencies:
           - openai-agents>=0.1.0
+          - pyyaml>=6.0
+          - types-PyYAML>=6.0
         args: [--ignore-missing-imports, --python-version=3.11]
         files: ^src/
 
