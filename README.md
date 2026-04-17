@@ -244,19 +244,6 @@ registry = SkillRegistry(router=MyCustomRouter())
 
 ---
 
-## Roadmap
-
-| Phase               | Status      | What ships                                                               |
-| ------------------- | ----------- | ------------------------------------------------------------------------ |
-| **1 — Proto**       | ✅ Complete | `Skill`, `SkillHooks`, always-on injection                               |
-| **2 — Routing**     | ✅ Complete | `SkillRegistry`, LLM-based routing, `invoke_skill` tool, `RunSkillHooks` |
-| **3 — File skills** | ✅ Complete | `FileSkill`, SKILL.md loading, YAML frontmatter, argument substitution   |
-| **4 — Advanced**    | ✅ Complete | Tool-result triggers, post-turn skills                                   |
-| **5 — Hardening**   | ✅ Complete | Source trust levels, path validation, coverage, docs                     |
-
-
----
-
 ## Compatibility
 
 Tested weekly against the latest OpenAI Agents SDK to ensure compatibility.
