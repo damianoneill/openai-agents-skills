@@ -136,8 +136,6 @@ def _build_manifest(skills: list[Skill], max_skills: int | None = None) -> str:
         if allowed_tools:
             description += f". Allowed tools: {', '.join(allowed_tools)}"
         line = f"- {skill.name}: {description}"
-        if skill.when_to_use:
-            line += f"\n  When to use: {skill.when_to_use}"
         lines.append(line)
     return "\n".join(lines)
 

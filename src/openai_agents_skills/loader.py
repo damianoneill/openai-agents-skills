@@ -130,7 +130,7 @@ class _SkillFields:
 
     name: str
     description: str
-    when_to_use: str = ""
+    always_on: bool = False
     allowed_tools: list[str] = field(default_factory=list)
     argument_hint: str = ""
     arg_names: list[str] = field(default_factory=list)
@@ -191,7 +191,7 @@ class FileSkill(Skill):
         """
         self.name = fields.name
         self.description = fields.description
-        self.when_to_use = fields.when_to_use
+        self.always_on = fields.always_on
         self.allowed_tools: list[str] = list(fields.allowed_tools)
         self.user_invocable: bool = fields.user_invocable
         self.source = source
@@ -408,7 +408,7 @@ def _parse_skill_file(content: str, dir_name: str) -> tuple[_SkillFields, str] |
     skill_fields = _SkillFields(
         name=name,
         description=description,
-        when_to_use=str(fields_dict.get("when_to_use", "")).strip(),
+        always_on=bool(fields_dict.get("always-on", False)),
         allowed_tools=allowed_tools,
         argument_hint=str(fields_dict.get("argument-hint", "")).strip(),
         arg_names=raw_args,

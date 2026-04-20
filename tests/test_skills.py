@@ -56,9 +56,9 @@ class TestSkillDefaults:
         sk = _MinimalSkill()
         assert sk.description == ""
 
-    def test_when_to_use_default_is_empty_string(self) -> None:
+    def test_always_on_default_is_false(self) -> None:
         sk = _MinimalSkill()
-        assert sk.when_to_use == ""
+        assert sk.always_on is False
 
     def test_is_enabled_defaults_to_true(self) -> None:
         sk = _MinimalSkill()
@@ -167,7 +167,7 @@ class TestSkillSubclass:
         class NamedSkill(Skill):
             name = "my_skill"
             description = "My description."
-            when_to_use = "Use when you need my_skill."
+            always_on = True
 
             async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return []
@@ -175,7 +175,7 @@ class TestSkillSubclass:
         sk = NamedSkill()
         assert sk.name == "my_skill"
         assert sk.description == "My description."
-        assert sk.when_to_use == "Use when you need my_skill."
+        assert sk.always_on is True
 
 
 # ---------------------------------------------------------------------------

@@ -37,8 +37,8 @@ stays lean and focused.
 | Concept | What it does |
 |---|---|
 | **`Skill`** | A named unit of instructions. Implements `get_prompt_blocks()` which returns the content to prepend to the model's input. |
-| **Always-on skill** | A skill with an empty `when_to_use`. Injects on every LLM call unconditionally. Used for standing policies, org context, handoff rules. |
-| **Routed skill** | A skill with a `when_to_use` description. Only injects when a router selects it as relevant to the current message. |
+| **Always-on skill** | A skill with `always_on=True`. Injects on every LLM call unconditionally. Used for standing policies, org context, handoff rules. |
+| **Routed skill** | A skill with `always_on=False` (default). Only injects when a router selects it as relevant to the current message. |
 | **`SkillRegistry`** | Holds all registered skills and knows which are always-on vs routable. |
 | **`LLMSkillRouter`** | Sends the user's message and a skill manifest to a lightweight model. Returns which routed skills to activate. Results are LRU-cached so repeated messages within a session pay the routing cost only once. |
 | **`SkillHooks`** | An `AgentHooks` subclass that wires the registry into the OpenAI Agents SDK loop. No monkey-patching — it uses the SDK's standard extension point. |
@@ -130,17 +130,17 @@ agent = Agent(
 
 ### Skills Registered
 
-| Skill name            | `description`                                                       | `when_to_use`                                                                                     | Routing                   |
-| --------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------- |
-| `bgp-troubleshooting` | "BGP session diagnostics and peer flap analysis."                   | "Use when user reports BGP session issues, peer flapping, route withdrawal, or AS-path problems." | Routed (selective)        |
-| `log-parser`          | "Parse and interpret Junos syslog messages and error codes."        | "Use when user provides log output, syslog messages, or Juniper error codes."                     | Routed (selective)        |
-| `junos-cli-reference` | "Junos CLI commands, commit syntax, and operational-mode reference." | "Use when user needs show commands, commit syntax, or operational-mode CLI guidance."             | Routed (selective)        |
-| `escalation-policy`   | "When and how to escalate to Juniper TAC."                          | _(empty)_                                                                                         | Always-on (unconditional) |
+| Skill name            | `description` (routing signal)                                                                                                                         | Routing                   |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------- |
+| `bgp-troubleshooting` | "BGP session diagnostics and peer flap analysis. Use when user reports BGP session issues, peer flapping, route withdrawal, or AS-path problems."      | Routed (selective)        |
+| `log-parser`          | "Parse and interpret Junos syslog messages and error codes. Use when user provides log output, syslog messages, or Juniper error codes."               | Routed (selective)        |
+| `junos-cli-reference` | "Junos CLI commands, commit syntax, and operational-mode reference. Use when user needs show commands, commit syntax, or operational-mode CLI guidance." | Routed (selective)        |
+| `escalation-policy`   | "When and how to escalate to Juniper TAC." (`always_on=True`)                                                                                          | Always-on (unconditional) |
 
-Because `escalation-policy` has an **empty `when_to_use`**, it is never passed to the
+Because `escalation-policy` has **`always_on=True`**, it is never passed to the
 router — it injects on every LLM call as long as `is_enabled()` returns `True`.
 
-The other three skills have `when_to_use` filled in, so they only inject when the
+The other three skills use `always_on=False` (default), so they only inject when the
 `LLMSkillRouter` selects them for the current message.
 
 ---

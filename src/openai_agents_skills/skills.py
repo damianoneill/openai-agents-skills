@@ -55,8 +55,10 @@ class Skill(ABC):
         name: Unique identifier for the skill.
         description: Short human-readable summary. Shown in the manifest and
             used by routing logic.
-        when_to_use: Prose description of when the skill should be triggered,
-            including example phrases. Used by routing.
+        always_on: When ``True``, this skill is always injected regardless of
+            the message. When ``False`` (default), it is passed to the router
+            and only injects when selected. Analogous to setting ``description``
+            to convey both what the skill does and when to use it.
         allowed_tools: Tools this skill may invoke. Defaults to an empty list
             (no restriction). Surfaced in the skill manifest in Phase 3.
             Instances that need their own list must set ``self.allowed_tools``
@@ -88,7 +90,7 @@ class Skill(ABC):
 
     name: str = ""
     description: str = ""
-    when_to_use: str = ""
+    always_on: bool = False
     allowed_tools: list[str] = []
     user_invocable: bool = True
     triggers_after_tools: list[str] = []

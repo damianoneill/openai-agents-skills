@@ -36,12 +36,12 @@ class _SimpleSkill(Skill):
         self,
         name: str,
         content: str = "injected",
-        when_to_use: str = "",
+        always_on: bool = False,
         enabled: bool = True,
     ) -> None:
         self.name = name
         self.description = f"Skill {name}"
-        self.when_to_use = when_to_use
+        self.always_on = always_on
         self._content = content
         self._enabled = enabled
 
@@ -60,7 +60,6 @@ class _MultiBlockSkill(Skill):
     ) -> None:
         self.name = name
         self.description = f"Multi-block skill {name}"
-        self.when_to_use = ""
         self._block_a = block_a
         self._block_b = block_b
 
@@ -77,7 +76,6 @@ class _ErrorSkill(Skill):
     def __init__(self, name: str = "error_skill") -> None:
         self.name = name
         self.description = "Always raises."
-        self.when_to_use = ""
 
     async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         raise ValueError(f"Skill {self.name!r} intentionally failed")
@@ -312,7 +310,7 @@ class TestDeduplicate:
 class TestSkillHooksWithRegistryNoRouter:
     async def test_always_on_skill_is_injected(self) -> None:
         registry = SkillRegistry()
-        skill = _SimpleSkill("always", content="always content")
+        skill = _SimpleSkill("always", content="always content", always_on=True)
         registry.register(skill)
 
         hooks = SkillHooks(registry=registry)
@@ -323,9 +321,9 @@ class TestSkillHooksWithRegistryNoRouter:
         assert any(item.get("content") == "always content" for item in items)
 
     async def test_routable_skill_not_injected_without_router(self) -> None:
-        """A skill with non-empty when_to_use is excluded when no router is configured."""
+        """A skill with always_on=False is excluded when no router is configured."""
         registry = SkillRegistry()
-        skill = _SimpleSkill("routed", content="routed content", when_to_use="Use for routing.")
+        skill = _SimpleSkill("routed", content="routed content")
         registry.register(skill)
 
         hooks = SkillHooks(registry=registry)
@@ -335,11 +333,11 @@ class TestSkillHooksWithRegistryNoRouter:
 
         assert not any(item.get("content") == "routed content" for item in items)
 
-    async def test_skill_with_non_empty_when_to_use_not_in_always_on(self) -> None:
+    async def test_routable_skill_not_in_always_on(self) -> None:
         """Only the always-on skill is injected; the routable one is skipped without router."""
         registry = SkillRegistry()
-        always = _SimpleSkill("always", content="always content")
-        routed = _SimpleSkill("routed", content="routed content", when_to_use="Use when X.")
+        always = _SimpleSkill("always", content="always content", always_on=True)
+        routed = _SimpleSkill("routed", content="routed content")
         registry.register(always)
         registry.register(routed)
 
@@ -354,7 +352,7 @@ class TestSkillHooksWithRegistryNoRouter:
 
     async def test_disabled_skill_not_injected(self) -> None:
         registry = SkillRegistry()
-        registry.register(_SimpleSkill("disabled", content="bad", enabled=False))
+        registry.register(_SimpleSkill("disabled", content="bad", enabled=False, always_on=True))
 
         hooks = SkillHooks(registry=registry)
         items: list[Any] = []
@@ -367,10 +365,10 @@ class TestSkillHooksWithRegistryNoRouter:
 
     async def test_direct_skills_and_registry_always_on_both_injected(self) -> None:
         registry = SkillRegistry()
-        registry.register(_SimpleSkill("reg_skill", content="reg content"))
+        registry.register(_SimpleSkill("reg_skill", content="reg content", always_on=True))
 
         hooks = SkillHooks(
-            skills=[_SimpleSkill("direct", content="direct content")],
+            skills=[_SimpleSkill("direct", content="direct content", always_on=True)],
             registry=registry,
         )
         items: list[Any] = []
@@ -391,9 +389,7 @@ class TestSkillHooksWithMockRouter:
     async def test_routed_skill_is_injected_when_router_selects_it(self) -> None:
         router = MockRouter(names=["routed"])
         registry = SkillRegistry(router=router)
-        registry.register(
-            _SimpleSkill("routed", content="routed content", when_to_use="Use for routing.")
-        )
+        registry.register(_SimpleSkill("routed", content="routed content"))
 
         hooks = SkillHooks(registry=registry)
         items: list[Any] = [{"role": "user", "content": "route this"}]
@@ -405,10 +401,8 @@ class TestSkillHooksWithMockRouter:
     async def test_both_always_on_and_routed_skills_injected(self) -> None:
         router = MockRouter(names=["routed"])
         registry = SkillRegistry(router=router)
-        registry.register(_SimpleSkill("always", content="always content"))
-        registry.register(
-            _SimpleSkill("routed", content="routed content", when_to_use="Use for routing.")
-        )
+        registry.register(_SimpleSkill("always", content="always content", always_on=True))
+        registry.register(_SimpleSkill("routed", content="routed content"))
 
         hooks = SkillHooks(registry=registry)
         items: list[Any] = [{"role": "user", "content": "route this"}]
@@ -423,7 +417,7 @@ class TestSkillHooksWithMockRouter:
         """Routing context is empty when there are no user messages; router stays idle."""
         router = MockRouter(names=["routed"])
         registry = SkillRegistry(router=router)
-        registry.register(_SimpleSkill("routed", content="rc", when_to_use="When X."))
+        registry.register(_SimpleSkill("routed", content="rc"))
 
         hooks = SkillHooks(registry=registry)
         items: list[Any] = []  # no user message → empty routing context
@@ -436,7 +430,7 @@ class TestSkillHooksWithMockRouter:
         """A routable skill the router did not select must be skipped."""
         router = MockRouter(names=[])  # selects nothing
         registry = SkillRegistry(router=router)
-        registry.register(_SimpleSkill("routed", content="rc", when_to_use="When X."))
+        registry.register(_SimpleSkill("routed", content="rc"))
 
         hooks = SkillHooks(registry=registry)
         items: list[Any] = [{"role": "user", "content": "test"}]
@@ -457,7 +451,7 @@ class TestSkillHooksDeduplication:
         """A skill passed as both a direct skill and selected by the router injects once."""
         router = MockRouter(names=["shared"])
         registry = SkillRegistry(router=router)
-        shared = _SimpleSkill("shared", content="shared content", when_to_use="Use when sharing.")
+        shared = _SimpleSkill("shared", content="shared content")
         registry.register(shared)
 
         hooks = SkillHooks(skills=[shared], registry=registry)
@@ -470,8 +464,8 @@ class TestSkillHooksDeduplication:
 
     async def test_registry_skill_wins_over_direct_skill_on_name_conflict(self) -> None:
         """When direct and registry skills share a name, the registry instance wins."""
-        direct_instance = _SimpleSkill("alpha", content="direct content")
-        registry_instance = _SimpleSkill("alpha", content="registry content")
+        direct_instance = _SimpleSkill("alpha", content="direct content", always_on=True)
+        registry_instance = _SimpleSkill("alpha", content="registry content", always_on=True)
 
         registry = SkillRegistry()
         registry.register(registry_instance)
@@ -487,7 +481,7 @@ class TestSkillHooksDeduplication:
         assert "direct content" not in contents
 
     async def test_duplicate_direct_skills_injected_only_once(self) -> None:
-        skill = _SimpleSkill("dup", content="dup content")
+        skill = _SimpleSkill("dup", content="dup content", always_on=True)
         # Same instance listed twice.
         hooks = SkillHooks(skills=[skill, skill])
         items: list[Any] = []
@@ -508,7 +502,7 @@ class TestErrorResilience:
         """A ValueError from get_prompt_blocks must not abort injection of other skills."""
         errors: list[tuple[Skill, Exception]] = []
         error_skill = _ErrorSkill("broken")
-        good_skill = _SimpleSkill("good", content="good content")
+        good_skill = _SimpleSkill("good", content="good content", always_on=True)
 
         hooks = SkillHooks(
             skills=[error_skill, good_skill],
@@ -592,7 +586,7 @@ class TestErrorResilience:
 class TestManifestInjection:
     async def test_manifest_injected_on_first_llm_call(self) -> None:
         registry = SkillRegistry()
-        registry.register(_SimpleSkill("myskill"))
+        registry.register(_SimpleSkill("myskill", always_on=True))
 
         hooks = SkillHooks(registry=registry)
         items: list[Any] = []
@@ -608,7 +602,7 @@ class TestManifestInjection:
 
     async def test_manifest_not_reinjected_on_second_call(self) -> None:
         registry = SkillRegistry()
-        registry.register(_SimpleSkill("myskill", content="skill content"))
+        registry.register(_SimpleSkill("myskill", content="skill content", always_on=True))
 
         hooks = SkillHooks(registry=registry)
         items_first: list[Any] = []
@@ -641,8 +635,8 @@ class TestManifestInjection:
 
     async def test_manifest_contains_registered_skill_names(self) -> None:
         registry = SkillRegistry()
-        registry.register(_SimpleSkill("skill_alpha"))
-        registry.register(_SimpleSkill("skill_beta"))
+        registry.register(_SimpleSkill("skill_alpha", always_on=True))
+        registry.register(_SimpleSkill("skill_beta", always_on=True))
 
         hooks = SkillHooks(registry=registry)
         items: list[Any] = []
@@ -658,7 +652,7 @@ class TestManifestInjection:
         assert "skill_beta" in manifest_text
 
     async def test_manifest_not_injected_without_registry(self) -> None:
-        skill = _SimpleSkill("standalone")
+        skill = _SimpleSkill("standalone", always_on=True)
         hooks = SkillHooks(skills=[skill])
         items: list[Any] = []
 
@@ -674,7 +668,7 @@ class TestManifestInjection:
     async def test_max_manifest_skills_caps_entries(self) -> None:
         registry = SkillRegistry()
         for i in range(5):
-            registry.register(_SimpleSkill(f"skill_{i}"))
+            registry.register(_SimpleSkill(f"skill_{i}", always_on=True))
 
         hooks = SkillHooks(registry=registry, max_manifest_skills=2)
         items: list[Any] = []
@@ -693,7 +687,7 @@ class TestManifestInjection:
     async def test_manifest_injected_flag_persists_across_calls(self) -> None:
         """RunState.manifest_injected is True after the first call."""
         registry = SkillRegistry()
-        registry.register(_SimpleSkill("skill"))
+        registry.register(_SimpleSkill("skill", always_on=True))
 
         hooks = SkillHooks(registry=registry)
         await _fire(hooks, [])
@@ -704,7 +698,7 @@ class TestManifestInjection:
     async def test_manifest_prepended_before_skill_blocks(self) -> None:
         """The manifest user message must appear before any skill prompt blocks."""
         registry = SkillRegistry()
-        registry.register(_SimpleSkill("myskill", content="skill block"))
+        registry.register(_SimpleSkill("myskill", content="skill block", always_on=True))
 
         hooks = SkillHooks(registry=registry)
         items: list[Any] = []
@@ -737,7 +731,7 @@ class TestManifestInjection:
 
 class TestRunSkillHooks:
     async def test_injects_direct_skill(self) -> None:
-        skill = _SimpleSkill("run_skill", content="run content")
+        skill = _SimpleSkill("run_skill", content="run content", always_on=True)
         hooks = RunSkillHooks(skills=[skill])
         items: list[Any] = [{"role": "user", "content": "user message"}]
 
@@ -748,7 +742,7 @@ class TestRunSkillHooks:
 
     async def test_injects_always_on_registry_skill(self) -> None:
         registry = SkillRegistry()
-        registry.register(_SimpleSkill("reg_skill", content="reg content"))
+        registry.register(_SimpleSkill("reg_skill", content="reg content", always_on=True))
 
         hooks = RunSkillHooks(registry=registry)
         items: list[Any] = [{"role": "user", "content": "test"}]
@@ -760,9 +754,7 @@ class TestRunSkillHooks:
     async def test_routable_skill_injected_with_router(self) -> None:
         router = MockRouter(names=["routed"])
         registry = SkillRegistry(router=router)
-        registry.register(
-            _SimpleSkill("routed", content="routed content", when_to_use="Use for routing.")
-        )
+        registry.register(_SimpleSkill("routed", content="routed content"))
 
         hooks = RunSkillHooks(registry=registry)
         items: list[Any] = [{"role": "user", "content": "route this"}]
@@ -773,7 +765,7 @@ class TestRunSkillHooks:
 
     async def test_injects_manifest_on_first_call(self) -> None:
         registry = SkillRegistry()
-        registry.register(_SimpleSkill("mskill"))
+        registry.register(_SimpleSkill("mskill", always_on=True))
 
         hooks = RunSkillHooks(registry=registry)
         items: list[Any] = []
@@ -788,7 +780,9 @@ class TestRunSkillHooks:
         assert len(manifest_items) == 1
 
     async def test_disabled_skill_not_injected(self) -> None:
-        hooks = RunSkillHooks(skills=[_SimpleSkill("off", content="bad", enabled=False)])
+        hooks = RunSkillHooks(
+            skills=[_SimpleSkill("off", content="bad", enabled=False, always_on=True)]
+        )
         items: list[Any] = []
 
         await _fire(hooks, items)
@@ -796,7 +790,7 @@ class TestRunSkillHooks:
         assert items == []
 
     async def test_error_skill_does_not_abort_other_skills(self) -> None:
-        good = _SimpleSkill("good", content="good content")
+        good = _SimpleSkill("good", content="good content", always_on=True)
         hooks = RunSkillHooks(
             skills=[_ErrorSkill("bad"), good],
             on_skill_error=lambda s, e: None,
@@ -809,7 +803,7 @@ class TestRunSkillHooks:
 
     async def test_on_agent_start_initialises_run_state(self) -> None:
         """on_agent_start must prime the RunState so the guard works correctly."""
-        hooks = RunSkillHooks(skills=[_SimpleSkill("s")])
+        hooks = RunSkillHooks(skills=[_SimpleSkill("s", always_on=True)])
 
         await hooks.on_agent_start(
             context=None,  # type: ignore[arg-type]
@@ -829,7 +823,7 @@ class TestRunSkillHooks:
 class TestDoubleInjectionGuard:
     async def test_same_skill_in_run_and_agent_hooks_injected_only_once(self) -> None:
         """Simulates RunSkillHooks and SkillHooks both firing for the same LLM call."""
-        skill = _SimpleSkill("shared", content="shared content")
+        skill = _SimpleSkill("shared", content="shared content", always_on=True)
 
         run_hooks = RunSkillHooks(skills=[skill])
         agent_hooks = SkillHooks(skills=[skill])
@@ -847,7 +841,7 @@ class TestDoubleInjectionGuard:
         assert len(shared_blocks) == 1
 
     async def test_injected_this_call_set_populated_during_injection(self) -> None:
-        skill = _SimpleSkill("tracked", content="tracked")
+        skill = _SimpleSkill("tracked", content="tracked", always_on=True)
 
         hooks = SkillHooks(skills=[skill])
         await _fire(hooks, [])
@@ -857,7 +851,7 @@ class TestDoubleInjectionGuard:
 
     async def test_skill_skipped_if_already_in_injected_this_call_guard(self) -> None:
         """Manually pre-populating injected_this_call prevents re-injection."""
-        skill = _SimpleSkill("pre_seen", content="pre_seen content")
+        skill = _SimpleSkill("pre_seen", content="pre_seen content", always_on=True)
 
         state = _get_run_state()
         state.injected_this_call.add("pre_seen")
@@ -872,8 +866,8 @@ class TestDoubleInjectionGuard:
 
     async def test_different_skills_in_run_and_agent_hooks_both_injected(self) -> None:
         """Distinct skills in each hook must both be injected (no false-positive guard)."""
-        run_skill = _SimpleSkill("run_only", content="run content")
-        agent_skill = _SimpleSkill("agent_only", content="agent content")
+        run_skill = _SimpleSkill("run_only", content="run content", always_on=True)
+        agent_skill = _SimpleSkill("agent_only", content="agent content", always_on=True)
 
         run_hooks = RunSkillHooks(skills=[run_skill])
         agent_hooks = SkillHooks(skills=[agent_skill])
@@ -894,7 +888,7 @@ class TestDoubleInjectionGuard:
         a skill registered in both injects exactly once."""
         import asyncio
 
-        skill = _SimpleSkill("shared", content="shared content")
+        skill = _SimpleSkill("shared", content="shared content", always_on=True)
         run_hooks = RunSkillHooks(skills=[skill])
         agent_hooks = SkillHooks(skills=[skill])
 
@@ -966,7 +960,6 @@ class TestInvokeSkillTool:
         class _EchoSkill(Skill):
             name = "echo"
             description = "Echoes args."
-            when_to_use = ""
 
             async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return [{"role": "user", "content": f"args={args}"}]

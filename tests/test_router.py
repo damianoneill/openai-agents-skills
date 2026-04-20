@@ -17,11 +17,10 @@ from openai_agents_skills.router import _extract_json
 
 
 class _RoutableSkill(Skill):
-    """Skill with a non-empty when_to_use — eligible for LLM routing."""
+    """Skill with always_on=False (default) — eligible for LLM routing."""
 
     name = "skill_a"
     description = "Does topic A things."
-    when_to_use = "Use when the user asks about topic A."
 
     async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [{"role": "user", "content": "skill_a content"}]
@@ -32,18 +31,17 @@ class _AnotherRoutableSkill(Skill):
 
     name = "skill_b"
     description = "Does topic B things."
-    when_to_use = "Use when the user asks about topic B."
 
     async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [{"role": "user", "content": "skill_b content"}]
 
 
 class _NonRoutableSkill(Skill):
-    """Skill with empty when_to_use — always-on, never routed by LLM."""
+    """Skill with always_on=True — always-on, never routed by LLM."""
 
     name = "non_routable"
     description = "Always on."
-    when_to_use = ""
+    always_on = True
 
     async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [{"role": "user", "content": "non_routable content"}]
@@ -137,7 +135,6 @@ class TestLLMSkillRouterSelect:
         class _OkSkill(Skill):
             name = "ok"
             description = "OK"
-            when_to_use = "Use when OK."
 
             async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return []
@@ -156,7 +153,7 @@ class TestLLMSkillRouterSelect:
         mock_get_response.assert_not_called()
 
     async def test_select_all_non_routable_skills_skips_llm_call(self) -> None:
-        """When every skill has empty when_to_use the LLM is never invoked."""
+        """When every skill has always_on=True the LLM is never invoked."""
         mock_model, mock_get_response = _make_mock_model('{"selected": []}')
         router = LLMSkillRouter(model=mock_model)
 
@@ -167,13 +164,13 @@ class TestLLMSkillRouterSelect:
 
 
 # ---------------------------------------------------------------------------
-# select — non-routable skill exclusion
+# select — always-on skill exclusion
 # ---------------------------------------------------------------------------
 
 
 class TestLLMSkillRouterNonRoutableExclusion:
-    async def test_non_routable_skill_not_in_manifest_sent_to_llm(self) -> None:
-        """Skills with empty when_to_use must not appear in the prompt."""
+    async def test_always_on_skill_not_in_manifest_sent_to_llm(self) -> None:
+        """Skills with always_on=True must not appear in the prompt."""
         mock_model, mock_get_response = _make_mock_model('{"selected": []}')
         router = LLMSkillRouter(model=mock_model)
 
@@ -195,7 +192,7 @@ class TestLLMSkillRouterNonRoutableExclusion:
         prompt_content: str = call_kwargs.kwargs["input"]
         assert "skill_a" in prompt_content
 
-    async def test_when_to_use_text_included_in_manifest(self) -> None:
+    async def test_description_text_included_in_manifest(self) -> None:
         mock_model, mock_get_response = _make_mock_model('{"selected": []}')
         router = LLMSkillRouter(model=mock_model)
 
@@ -203,7 +200,7 @@ class TestLLMSkillRouterNonRoutableExclusion:
 
         call_kwargs = mock_get_response.call_args
         prompt_content: str = call_kwargs.kwargs["input"]
-        assert "topic A" in prompt_content
+        assert "Does topic A things" in prompt_content
 
 
 # ---------------------------------------------------------------------------
@@ -505,7 +502,6 @@ class TestLLMSkillRouterProseAndThinkingResponses:
         class _BgpSkill(Skill):
             name = "bgp-troubleshooting"
             description = "BGP diagnostics."
-            when_to_use = "Use for BGP issues."
 
             async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
                 return []

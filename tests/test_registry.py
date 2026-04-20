@@ -15,22 +15,21 @@ from openai_agents_skills import Skill, SkillRegistry
 
 
 class _AlwaysOnSkill(Skill):
-    """Enabled, unconditional skill (when_to_use is empty)."""
+    """Enabled, unconditional skill (always_on=True)."""
 
     name = "always_on"
     description = "Always injects."
-    when_to_use = ""
+    always_on = True
 
     async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [{"role": "user", "content": "always on content"}]
 
 
 class _RoutableSkill(Skill):
-    """Skill with a non-empty when_to_use — eligible for routing only."""
+    """Skill with always_on=False (default) — eligible for routing only."""
 
     name = "routable"
     description = "Routable skill."
-    when_to_use = "Use when the user asks about routing topics."
 
     async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [{"role": "user", "content": "routed content"}]
@@ -41,7 +40,7 @@ class _DisabledSkill(Skill):
 
     name = "disabled"
     description = "Never active."
-    when_to_use = ""
+    always_on = True
 
     def is_enabled(self, context=None, agent=None) -> bool:
         return False
@@ -55,7 +54,7 @@ class _SecondAlwaysOnSkill(Skill):
 
     name = "second"
     description = "Second always-on skill."
-    when_to_use = ""
+    always_on = True
 
     async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return [{"role": "user", "content": "second content"}]
@@ -64,7 +63,6 @@ class _SecondAlwaysOnSkill(Skill):
 class _RoutableB(Skill):
     name = "routable_b"
     description = "B"
-    when_to_use = "Use for B."
 
     async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
         return []
@@ -234,9 +232,9 @@ class TestGetAlwaysOn:
 
         assert skill in result
 
-    def test_excludes_skill_with_non_empty_when_to_use(self) -> None:
+    def test_excludes_routable_skill(self) -> None:
         registry = SkillRegistry()
-        registry.register(_RoutableSkill())  # when_to_use is non-empty
+        registry.register(_RoutableSkill())  # always_on=False — routable, not in always-on
 
         result = registry.get_always_on()
 
@@ -285,7 +283,7 @@ class TestGetAlwaysOn:
         class _ToggleSkill(Skill):
             name = "toggle"
             description = "Toggleable."
-            when_to_use = ""
+            always_on = True
 
             def __init__(self, active: bool) -> None:
                 self._active = active
@@ -376,11 +374,11 @@ class TestSelectForMessageWithRouter:
         assert result == []
 
     async def test_only_routable_skills_passed_to_router(self) -> None:
-        """Skills with empty when_to_use must NOT be forwarded to the router."""
+        """Skills with always_on=True must NOT be forwarded to the router."""
         router = MockRouter(names=[])
         registry = SkillRegistry(router=router)
-        registry.register(_AlwaysOnSkill())  # when_to_use="" — not routable
-        registry.register(_RoutableSkill())  # when_to_use!="" — routable
+        registry.register(_AlwaysOnSkill())  # always_on=True — not routable
+        registry.register(_RoutableSkill())  # always_on=False (default) — routable
 
         await registry.select_for_message("test message")
 
@@ -403,10 +401,10 @@ class TestSelectForMessageWithRouter:
         assert len(result) == 1
 
     async def test_router_not_called_when_no_routable_skills_registered(self) -> None:
-        """When all registered skills have empty when_to_use the router is bypassed."""
+        """When all registered skills have always_on=True the router is bypassed."""
         router = MockRouter(names=["always_on"])
         registry = SkillRegistry(router=router)
-        registry.register(_AlwaysOnSkill())  # not routable
+        registry.register(_AlwaysOnSkill())  # always_on=True — always injected, not routed
 
         result = await registry.select_for_message("test")
 
@@ -432,7 +430,7 @@ class TestSelectForMessageWithRouter:
     async def test_disabled_always_on_not_in_always_on_but_routable_still_routed(
         self,
     ) -> None:
-        """A disabled skill with when_to_use="" is excluded from always-on and never routed."""
+        """A disabled skill (always_on=True) is excluded from always-on and never routed."""
         router = MockRouter(names=[])
         registry = SkillRegistry(router=router)
         registry.register(_DisabledSkill())
@@ -440,7 +438,7 @@ class TestSelectForMessageWithRouter:
         result = await registry.select_for_message("test")
 
         assert result == []
-        # Disabled skill has empty when_to_use, so router is not called at all.
+        # Disabled skill has always_on=True, so router is not called at all.
         assert len(router.calls) == 0
 
     async def test_disabled_routable_skill_not_forwarded_to_router(self) -> None:
@@ -450,7 +448,6 @@ class TestSelectForMessageWithRouter:
         class _DisabledRoutable(Skill):
             name = "disabled_routable"
             description = "Disabled but routable."
-            when_to_use = "Use when routing."
 
             def is_enabled(self, context=None, agent=None) -> bool:
                 return False

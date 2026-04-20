@@ -87,7 +87,6 @@ from openai_agents_skills import Skill
 class ReplyInBulletsSkill(Skill):
     name = "reply_in_bullets"
     description = "Instructs the agent to respond using bullet points."
-    when_to_use = "Use when structured, scannable output is preferred."
 
     async def get_prompt_blocks(self, context, agent, args=""):
         return [{"role": "user", "content": "Always respond using bullet points."}]
@@ -99,7 +98,7 @@ class ReplyInBulletsSkill(Skill):
 | ------------- | ----- | --------------------------------------------------- |
 | `name`        | `str` | Unique identifier                                   |
 | `description` | `str` | Human-readable summary                              |
-| `when_to_use` | `str` | Prose trigger description (used by Phase 2 routing) |
+| `always_on` | `bool` | When `True`, injects on every call regardless of the message. Default: `False` (routed by description). |
 
 ### Context-aware skills
 
@@ -166,9 +165,8 @@ agent = Agent(
 ## Registry & Routing
 
 For dynamic per-turn skill selection, use `SkillRegistry` with `LLMSkillRouter`.
-Skills with a non-empty `when_to_use` are forwarded to the router, which uses a
-lightweight LLM call to decide which skills are relevant for the current message.
-Skills with an empty `when_to_use` are always-on and inject unconditionally.
+Skills without `always_on=True` are forwarded to the router, which uses `description`
+to decide relevance. Skills with `always_on=True` inject unconditionally.
 
 ```python
 from agents import Agent, Runner
@@ -180,8 +178,8 @@ model = OpenAIChatCompletionsModel("gpt-4o-mini", AsyncOpenAI())
 router = LLMSkillRouter(model=model)
 # Pass any SDK Model instance — LitellmModel, AnyLLMModel, or OpenAIChatCompletionsModel all work.
 registry = SkillRegistry(router=router)
-registry.register(CitationSkill())        # non-empty when_to_use — routed selectively
-registry.register(SafetyReminderSkill())  # empty when_to_use   — always injected
+registry.register(CitationSkill())        # always_on=False (default) — routed by description
+registry.register(SafetyReminderSkill())  # always_on=True — always injected
 
 agent = Agent(
     name="Assistant",

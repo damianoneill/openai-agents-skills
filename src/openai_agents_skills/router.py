@@ -86,8 +86,8 @@ class SkillRouter(Protocol):
 
         Args:
             message: The routing context string (user message or multi-turn summary).
-            skills: Candidate skills — typically only those with a non-empty
-                ``when_to_use`` are passed.
+            skills: Candidate skills — typically only those with
+                ``always_on=False`` are passed.
 
         Returns:
             A list of skill names from *skills* that should be activated.
@@ -136,8 +136,8 @@ class BaseSkillRouter:
     async def select(self, message: str, skills: list[Skill]) -> list[str]:
         """Select skills relevant to *message*.
 
-        Skills with an empty ``when_to_use`` are excluded from the manifest
-        sent to the model — they are always-on and need no routing signal.
+        Skills with ``always_on=True`` are excluded from the manifest —
+        they inject unconditionally and need no routing signal.
 
         On any exception (network error, JSON parse failure, unexpected response
         shape) logs a WARNING and returns ``[]`` so the run continues with
@@ -154,13 +154,11 @@ class BaseSkillRouter:
             self._cache.move_to_end(message)
             return list(self._cache[message])
 
-        routable = [s for s in skills if s.when_to_use]
+        routable = [s for s in skills if not s.always_on]
         if not routable:
             return []
 
-        manifest = "\n".join(
-            f"- {s.name}: {s.description}\n  When to use: {s.when_to_use}" for s in routable
-        )
+        manifest = "\n".join(f"- {s.name}: {s.description}" for s in routable)
         prompt = _ROUTER_PROMPT_TEMPLATE.format(message=message, manifest=manifest)
 
         try:

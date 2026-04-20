@@ -26,14 +26,14 @@ class _SimpleSkill(Skill):
         self,
         name: str,
         content: str = "injected",
-        when_to_use: str = "",
+        always_on: bool = False,
         enabled: bool = True,
         triggers_after_tools: list[str] | None = None,
         triggers_after_turn: bool = False,
     ) -> None:
         self.name = name
         self.description = f"Skill {name}"
-        self.when_to_use = when_to_use
+        self.always_on = always_on
         self._content = content
         self._enabled = enabled
         self.triggers_after_tools = list(triggers_after_tools or [])
@@ -383,17 +383,15 @@ class TestPendingDrain:
     async def test_pending_not_reinjected_on_subsequent_llm_start(self) -> None:
         """Draining is a one-shot operation; pending must not cause a second injection.
 
-        The skill has a non-empty ``when_to_use`` so it is routable rather than
+        The skill has ``always_on=False`` so it is routable rather than
         always-on.  With no router configured it is never selected by routing
         either, meaning the *only* path into input_items is the pending drain.
         After that drain the skill must not re-appear.
         """
         registry = SkillRegistry()
-        # Non-empty when_to_use → excluded from get_always_on(); no router → never routed.
+        # always_on=False → excluded from get_always_on(); no router → never routed.
         # The only injection path is the pending drain triggered by the tool.
-        registry.register(
-            _SimpleSkill("s", triggers_after_tools=["t"], content="ONCE", when_to_use="when t runs")
-        )
+        registry.register(_SimpleSkill("s", triggers_after_tools=["t"], content="ONCE"))
         hooks = _hooks_with_registry(registry)
 
         await hooks.on_start(_mock_context(), _mock_agent())

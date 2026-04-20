@@ -110,9 +110,9 @@ class SkillRegistry:
     ) -> list[Skill]:
         """Return skills that should always be injected regardless of the message.
 
-        A skill is *always-on* when its ``when_to_use`` attribute is empty **and**
-        ``is_enabled()`` returns ``True``.  Skills with a non-empty ``when_to_use``
-        are excluded — they are only injected when the router selects them.
+        A skill is *always-on* when its ``always_on`` attribute is ``True`` **and**
+        ``is_enabled()`` returns ``True``.  Skills with ``always_on=False`` are
+        excluded — they are only injected when the router selects them.
 
         Args:
             context: The current run context, or ``None`` if not available.
@@ -121,9 +121,7 @@ class SkillRegistry:
         Returns:
             List of enabled, unconditional skills in registration order.
         """
-        return [
-            s for s in self._skills.values() if not s.when_to_use and s.is_enabled(context, agent)
-        ]
+        return [s for s in self._skills.values() if s.always_on and s.is_enabled(context, agent)]
 
     # ------------------------------------------------------------------
     # Routing
@@ -137,7 +135,7 @@ class SkillRegistry:
     ) -> list[Skill]:
         """Return skills selected by the router for this message.
 
-        Only skills with a non-empty ``when_to_use`` are passed to the router.
+        Only skills with ``always_on=False`` are passed to the router.
         Returns ``[]`` when no router is configured (all active skills then come
         from :meth:`get_always_on`).
 
@@ -155,7 +153,7 @@ class SkillRegistry:
         if self._router is None:
             return []
         routable = [
-            s for s in self._skills.values() if s.when_to_use and s.is_enabled(context, agent)
+            s for s in self._skills.values() if not s.always_on and s.is_enabled(context, agent)
         ]
         if not routable:
             return []

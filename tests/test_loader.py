@@ -41,7 +41,7 @@ _FIXTURES_DIR = Path(__file__).parent / "fixtures" / ".agent" / "skills"
 def _make_fields(
     name: str = "test",
     description: str = "Test skill.",
-    when_to_use: str = "",
+    always_on: bool = False,
     allowed_tools: list[str] | None = None,
     arg_names: list[str] | None = None,
     user_invocable: bool = True,
@@ -49,7 +49,7 @@ def _make_fields(
     return _SkillFields(
         name=name,
         description=description,
-        when_to_use=when_to_use,
+        always_on=always_on,
         allowed_tools=allowed_tools or [],
         argument_hint="",
         arg_names=arg_names or [],
@@ -76,7 +76,6 @@ _FULL_SKILL_MD = """\
 ---
 name: full-skill
 description: A fully-specified skill.
-when_to_use: Use when you need everything.
 allowed-tools:
   - tool_a
   - tool_b
@@ -182,14 +181,13 @@ class TestFileSkill:
         fields = _make_fields(
             name="my-skill",
             description="My description.",
-            when_to_use="Use when needed.",
             allowed_tools=["tool_x"],
             user_invocable=False,
         )
         skill = FileSkill(fields=fields, body="body", file_path=tmp_path / "SKILL.md")
         assert skill.name == "my-skill"
         assert skill.description == "My description."
-        assert skill.when_to_use == "Use when needed."
+        assert skill.always_on is False
         assert skill.allowed_tools == ["tool_x"]
         assert skill.user_invocable is False
 
@@ -291,7 +289,7 @@ class TestParseSkillFile:
         result = _parse_skill_file(content, "minimal")
         assert result is not None
         fields, _ = result
-        assert fields.when_to_use == ""
+        assert fields.always_on is False
         assert fields.allowed_tools == []
         assert fields.argument_hint == ""
         assert fields.arg_names == []
@@ -419,7 +417,6 @@ class TestLoadSkillsFromDir:
         assert "test-skill" in skill_map
         ts = skill_map["test-skill"]
         assert ts.description == "A test skill for automated tests."
-        assert ts.when_to_use == "Use when testing the loader."
 
     async def test_with_args_fixture_loaded(self) -> None:
         results = await load_skills_from_dir(_FIXTURES_DIR, SkillSource.PROJECT)

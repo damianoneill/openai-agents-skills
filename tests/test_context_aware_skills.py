@@ -652,6 +652,7 @@ class TestContextForwardingViaRegistryGetAlwaysOn:
         class _RecordingSkill(Skill):
             name = "recorder"
             description = "Records context received in is_enabled"
+            always_on = True
 
             def is_enabled(self, context: Any = None, agent: Any = None) -> bool:
                 received_contexts.append(context)
@@ -677,6 +678,7 @@ class TestContextForwardingViaRegistryGetAlwaysOn:
         class _RecordingSkill(Skill):
             name = "recorder"
             description = "Records agent received in is_enabled"
+            always_on = True
 
             def is_enabled(self, context: Any = None, agent: Any = None) -> bool:
                 received_agents.append(agent)
@@ -701,6 +703,7 @@ class TestContextForwardingViaRegistryGetAlwaysOn:
         class _ContextGatedSkill(Skill):
             name = "ctx_gated"
             description = "Only when allowed"
+            always_on = True
 
             def is_enabled(self, context: Any = None, agent: Any = None) -> bool:
                 return context is not None and bool(context.context.allowed)
@@ -727,6 +730,7 @@ class TestContextForwardingViaRegistryGetAlwaysOn:
         class _RequiresContextSkill(Skill):
             name = "needs_ctx"
             description = "Requires non-None context"
+            always_on = True
 
             def is_enabled(self, context: Any = None, agent: Any = None) -> bool:
                 return context is not None
@@ -747,6 +751,7 @@ class TestContextForwardingViaRegistryGetAlwaysOn:
         class _ContextGatedSkill(Skill):
             name = "pipeline_gated"
             description = "Context-gated always-on"
+            always_on = True
 
             def is_enabled(self, context: Any = None, agent: Any = None) -> bool:
                 return context is not None and bool(context.context.active)
