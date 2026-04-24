@@ -1,7 +1,7 @@
 """Argument substitution for skill prompt templates.
 
-Provides :func:`substitute_args`, which replaces ``$arg_name``, ``$N`` positional,
-and ``${KEY}`` / ``$KEY`` variable patterns in a prompt template string.
+Provides :func:`substitute_args`, which replaces ``$ARGUMENTS`` and ``${KEY}``
+variable patterns in a prompt template string.
 
 Unsafe values (null bytes, YAML boundaries, bidirectional overrides, role headers)
 are rejected before substitution to prevent prompt-injection attacks.
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # U+202A–U+202E (LRE, RLE, PDF, LRO, RLO) and U+2066–U+2069 (LRI, RLI, FSI, PDI).
-_BIDI_OVERRIDES_RE: re.Pattern[str] = re.compile(r"[\u202a-\u202e\u2066-\u2069]")
+_BIDI_OVERRIDES_RE: re.Pattern[str] = re.compile(r"[‪-‮⁦-⁩]")
 
 # YAML document-start and document-end boundary markers.
 _YAML_BOUNDARY_RE: re.Pattern[str] = re.compile(r"\n---\n|\n\.\.\.\n")
@@ -37,14 +37,9 @@ _ROLE_HEADER_RE: re.Pattern[str] = re.compile(r"\n(?:Human:|Assistant:|<\|im_sta
 def _validate_value(value: str, label: str) -> None:
     """Validate that *value* is safe to substitute into a prompt template.
 
-    Checks for content that could be used to inject instructions, override
-    the role structure, or smuggle control characters into a downstream model
-    prompt.
-
     Args:
         value: The candidate substitution string.
-        label: A short identifier used in error messages (e.g. ``"$1"`` or
-            ``"${RUN_ID}"``).
+        label: A short identifier used in error messages.
 
     Raises:
         ValueError: When *value* contains null bytes, YAML frontmatter boundary
@@ -61,7 +56,7 @@ def _validate_value(value: str, label: str) -> None:
     if _BIDI_OVERRIDES_RE.search(value):
         raise ValueError(
             f"Substitution value for {label!r} contains a Unicode bidirectional"
-            " override character (U+202A\u2013U+202E or U+2066\u2013U+2069)."
+            " override character (U+202A–U+202E or U+2066–U+2069)."
         )
     if _ROLE_HEADER_RE.search(value):
         raise ValueError(
@@ -71,16 +66,10 @@ def _validate_value(value: str, label: str) -> None:
 
 
 def _literal_replacer(value: str) -> Callable[[re.Match[str]], str]:
-    """Return a :func:`re.sub` replacement callable that always yields *value* literally.
+    """Return a replacement callable that always yields *value* literally.
 
-    Using a callable avoids backslash interpretation that would occur if *value*
-    were passed directly as the ``repl`` string argument to :func:`re.sub`.
-
-    Args:
-        value: The literal replacement string.
-
-    Returns:
-        A callable suitable for the *repl* argument of :func:`re.sub`.
+    Avoids backslash interpretation that would occur if *value* were passed
+    directly as the ``repl`` string to :func:`re.sub`.
     """
 
     def _replace(_match: re.Match[str]) -> str:
@@ -97,76 +86,54 @@ def _literal_replacer(value: str) -> Callable[[re.Match[str]], str]:
 def substitute_args(
     template: str,
     raw_args: str,
-    arg_names: list[str],
     variables: dict[str, str] | None = None,
 ) -> str:
-    """Replace argument, positional, and variable patterns in *template*.
+    """Replace ``$ARGUMENTS`` and variable patterns in *template*.
 
-    Applies substitutions in three ordered passes:
+    Applies substitutions in two ordered passes:
 
-    1. **Named args** — whitespace-split *raw_args* are mapped positionally to
-       *arg_names* and each ``$name`` token (with identifier-boundary guard) is
-       replaced.  ``$hostname`` is *not* replaced when an arg_name is ``"host"``.
-    2. **Positional fallback** — ``$1``, ``$2``, ... are replaced with the
-       corresponding whitespace-split parts of *raw_args*.
-    3. **Caller-supplied variables** — ``${KEY}`` and ``$KEY``
-       (identifier-bounded) patterns are replaced with the matching value from
-       *variables*.  A ``DEBUG``-level log entry is emitted for any ``${KEY}``
-       pattern whose key is absent from *variables*; the pattern is left
-       unchanged.
+    1. **Arguments** — if ``$ARGUMENTS`` appears in *template*, it is replaced
+       with *raw_args*.  If ``$ARGUMENTS`` is absent and *raw_args* is non-empty,
+       the arguments are appended to the template as ``ARGUMENTS: <value>``.
+    2. **Caller-supplied variables** — ``${KEY}`` and ``$KEY``
+       (identifier-bounded) patterns are replaced with values from *variables*.
+       A ``DEBUG``-level log entry is emitted for any ``${KEY}`` whose key is
+       absent from *variables*; the pattern is left unchanged.
 
     Each substituted value is validated before use; see *Raises* for details.
-    Unknown ``$pattern`` tokens that do not match any arg name, positional index,
-    or variable key are left unchanged.
 
     Args:
-        template: The prompt template string, potentially containing ``$name``,
-            ``$N``, ``${KEY}``, or ``$KEY`` patterns.
-        raw_args: A whitespace-separated string of argument values.  Empty or
-            whitespace-only input disables named and positional substitution.
-        arg_names: Ordered list of argument names that *raw_args* parts map to.
-            Pass an empty list to skip named substitution; positional ``$N``
-            substitution still occurs.
+        template: The prompt template string, potentially containing
+            ``$ARGUMENTS`` or ``${KEY}`` / ``$KEY`` patterns.
+        raw_args: The full argument string passed by the caller.  Empty or
+            whitespace-only input means no argument substitution occurs.
         variables: Optional mapping of variable names to replacement values.
-            Both ``${KEY}`` and ``$KEY`` (identifier-bounded) forms are replaced.
             Pass ``None`` to skip variable substitution entirely.
 
     Returns:
         The template string after all applicable substitutions.
 
     Raises:
-        ValueError: If any substituted value contains null bytes
-            (``\\x00``), YAML frontmatter boundary sequences
-            (``\\n---\\n`` or ``\\n...\\n``), Unicode bidirectional override
-            characters (U+202A\u2013U+202E or U+2066\u2013U+2069), or role/system
-            header sequences (``\\nHuman:``, ``\\nAssistant:``, or
-            ``\\n<|im_start|>``).
+        ValueError: If any substituted value contains null bytes, YAML
+            frontmatter boundary sequences, Unicode bidirectional override
+            characters, or role/system header sequences.
 
     Example::
 
-        >>> substitute_args("Connect to $host on $port", "myserver 8080", ["host", "port"])
-        'Connect to myserver on 8080'
+        >>> substitute_args("Fix issue $ARGUMENTS", "42")
+        'Fix issue 42'
 
-        >>> substitute_args(
-        ...     "Run on $1 with ${RUN_ID}",
-        ...     "prod",
-        ...     [],
-        ...     variables={"RUN_ID": "abc123"},
-        ... )
-        'Run on prod with abc123'
+        >>> substitute_args("Deploy to $ARGUMENTS in ${ENV}", "prod", {"ENV": "us-east-1"})
+        'Deploy to prod in us-east-1'
+
+        >>> substitute_args("Run the workflow.", "extra context")
+        'Run the workflow.\\n\\nARGUMENTS: extra context'
     """
-    # Split raw_args into positional parts; empty/whitespace-only yields no parts.
-    parts: list[str] = raw_args.split() if raw_args.strip() else []
+    args_present = bool(raw_args.strip())
 
-    # ------------------------------------------------------------------
-    # Validate all arg values before any substitution.
-    # ------------------------------------------------------------------
-    for i, val in enumerate(parts):
-        _validate_value(val, f"${i + 1}")
+    if args_present:
+        _validate_value(raw_args, "$ARGUMENTS")
 
-    # ------------------------------------------------------------------
-    # Validate variable values for keys referenced in the original template.
-    # ------------------------------------------------------------------
     if variables is not None:
         for key, val in variables.items():
             braced_present = f"${{{key}}}" in template
@@ -177,34 +144,18 @@ def substitute_args(
                 _validate_value(val, f"${{{key}}}")
 
     # ------------------------------------------------------------------
-    # Step 1: Named arg substitution ($arg_name with identifier boundary).
+    # Step 1: $ARGUMENTS substitution.
     # ------------------------------------------------------------------
-    if arg_names and parts:
-        for i, name in enumerate(arg_names):
-            if i < len(parts):
-                template = re.sub(
-                    r"\$" + re.escape(name) + r"(?![a-zA-Z0-9_])",
-                    _literal_replacer(parts[i]),
-                    template,
-                )
+    if args_present:
+        if "$ARGUMENTS" in template:
+            template = template.replace("$ARGUMENTS", raw_args)
+        else:
+            template = f"{template}\n\nARGUMENTS: {raw_args}"
 
     # ------------------------------------------------------------------
-    # Step 2: Positional fallback ($1, $2, ...).
-    # ------------------------------------------------------------------
-    if parts:
-        for i, val in enumerate(parts):
-            template = re.sub(
-                r"\$" + str(i + 1) + r"(?!\d)",
-                _literal_replacer(val),
-                template,
-            )
-
-    # ------------------------------------------------------------------
-    # Step 3: Caller-supplied variable substitution.
+    # Step 2: Caller-supplied variable substitution.
     # ------------------------------------------------------------------
     if variables is not None:
-        # Emit DEBUG for any ${KEY} patterns in the (partially-substituted)
-        # template whose key is absent from variables.
         for key in re.findall(r"\$\{([^}]+)\}", template):
             if key not in variables:
                 logger.debug(
@@ -213,9 +164,7 @@ def substitute_args(
                 )
 
         for key, val in variables.items():
-            # Braced form: ${KEY}.
             template = template.replace(f"${{{key}}}", val)
-            # Unbraced form: $KEY with identifier boundary.
             template = re.sub(
                 r"\$" + re.escape(key) + r"(?![a-zA-Z0-9_])",
                 _literal_replacer(val),

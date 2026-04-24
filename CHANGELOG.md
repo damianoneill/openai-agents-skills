@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## v0.1.1 (Unreleased)
 
+### Feat
+
+- **agentskills.io standard alignment** — `SKILL.md` files now fully align with the
+  [agentskills.io](https://agentskills.io/) open specification:
+  - `allowed-tools` accepts a space-separated string (`"Bash(git:*) Read"`) per spec, as well as a
+    YAML list for backward compatibility.
+  - New standard frontmatter fields parsed and stored on `FileSkill`: `license`, `compatibility`
+    (max 500 chars), and `metadata` (arbitrary key-value map).
+  - `name` validated per spec: lowercase letters, digits, and hyphens only; no leading/trailing
+    hyphen; no consecutive hyphens (`--`); max 64 characters.
+  - `description` max 1024 characters enforced.
+  - **Argument substitution aligned with Claude Code standard** — `substitute_args` now uses
+    `$ARGUMENTS` (full argument string) instead of named/positional `$arg_name` / `$N` patterns.
+    If `$ARGUMENTS` is absent from the body and arguments are supplied, they are appended as
+    `ARGUMENTS: <value>`. The `arguments` frontmatter field is removed; use `$ARGUMENTS` in the
+    skill body instead. `argument-hint` is retained as a display-only extension field.
+
 ### Fix
 
 - **`LLMSkillRouter`: remove `response_format` default** — `response_format={"type":
@@ -44,15 +61,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skill invocation.
 
 - **Phase 3 — File-based skills:** `FileSkill` concrete `Skill` subclass loaded from
-  `SKILL.md` files; YAML frontmatter parsing (`description`, `when_to_use`,
-  `allowed-tools`, `arguments`, `argument-hint`, `user-invocable`); `SkillSource`
-  enum (`BUNDLED`, `USER`, `PROJECT`, `EXTRA`); `SkillConfig` dataclass for loader
-  configuration; `load_skills_from_dir` and `load_all_skills` with concurrent async
-  I/O, `realpath()` deduplication, and user > project > extra priority ordering;
-  `substitute_args` with named, positional, and `${VAR}` variable substitution;
-  pre-substitution safety validation rejecting null bytes, YAML boundaries,
-  bidirectional override characters, and role-header sequences; path traversal guard
-  (`assert_within_base`); `get_prompt_blocks` result cache keyed by `args` string;
+  `SKILL.md` files; YAML frontmatter parsing (`description`, `allowed-tools`,
+  `argument-hint`, `user-invocable`); `SkillSource` enum (`BUNDLED`, `USER`, `PROJECT`,
+  `EXTRA`); `SkillConfig` dataclass for loader configuration; `load_skills_from_dir` and
+  `load_all_skills` with concurrent async I/O, `realpath()` deduplication, and user >
+  project > extra priority ordering; `substitute_args` with `$ARGUMENTS` and `${VAR}`
+  variable substitution; pre-substitution safety validation rejecting null bytes, YAML
+  boundaries, bidirectional override characters, and role-header sequences; path traversal
+  guard (`assert_within_base`); `get_prompt_blocks` result cache keyed by `args` string;
   `allowed-tools` and `user-invocable` surfaced in manifest.
 
 - **Phase 4 — Advanced triggering:** `triggers_after_tools` and `triggers_after_turn`

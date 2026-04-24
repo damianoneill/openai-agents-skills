@@ -1,9 +1,6 @@
 ---
 name: with-args
-description: A skill that accepts named arguments.
-arguments:
-  - host
-  - port
+description: A skill that accepts arguments.
 argument-hint: "[host] [port]"
 ---
-Connect to $host on port $port.
+Connect to $ARGUMENTS.

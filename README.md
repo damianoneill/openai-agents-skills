@@ -11,6 +11,9 @@ A **Skill** is a named, reusable prompt fragment injected into the LLM's context
 in the agent loop via `AgentHooks`. This lets you package workflow instructions, checklists, or
 procedures as composable named units that can be shared across agents without duplicating configuration.
 
+File-based skills follow the [agentskills.io](https://agentskills.io/) open standard, making
+`SKILL.md` files portable across any compatible agent tool.
+
 
 ---
 
@@ -94,11 +97,15 @@ class ReplyInBulletsSkill(Skill):
 
 ### Class attributes
 
-| Attribute     | Type  | Purpose                                             |
-| ------------- | ----- | --------------------------------------------------- |
-| `name`        | `str` | Unique identifier                                   |
-| `description` | `str` | Human-readable summary                              |
-| `always_on` | `bool` | When `True`, injects on every call regardless of the message. Default: `False` (routed by description). |
+| Attribute             | Type        | Purpose                                                                                    |
+| --------------------- | ----------- | ------------------------------------------------------------------------------------------ |
+| `name`                | `str`       | Unique identifier                                                                          |
+| `description`         | `str`       | Human-readable summary; used by routing logic to decide relevance                         |
+| `always_on`           | `bool`      | `True` → injects on every call; `False` (default) → routed by description                |
+| `allowed_tools`       | `list[str]` | Tools this skill may invoke; surfaced in the manifest. Default: `[]`                      |
+| `user_invocable`      | `bool`      | `False` hides the skill from the manifest while still allowing injection. Default: `True` |
+| `triggers_after_tools`| `list[str]` | Tool names that queue this skill for injection after the tool completes. Default: `[]`    |
+| `triggers_after_turn` | `bool`      | `True` → queued after every model response for quality checks or review. Default: `False` |
 
 ### Context-aware skills
 
@@ -159,6 +166,70 @@ agent = Agent(
     hooks=hooks,
 )
 ```
+
+---
+
+## File-based Skills
+
+Skills can be defined as `SKILL.md` files on disk — no Python required. This follows the
+[agentskills.io](https://agentskills.io/) open standard, so the same skill folders work across
+any compatible agent tool (Cursor, VS Code, GitHub Copilot, Claude Code, and others).
+
+### Directory layout
+
+```
+~/.agent/skills/          # user layer  (personal, cross-repo)
+  my-skill/
+    SKILL.md
+
+<project>/.agent/skills/  # project layer (checked in)
+  payments-workflow/
+    SKILL.md
+```
+
+### SKILL.md format
+
+```yaml
+---
+name: payments-workflow          # required: lowercase letters, digits, hyphens; max 64 chars
+description: >                   # required: what the skill does and when to use it; max 1024 chars
+  Guides the agent through the
+  end-to-end payments workflow.
+license: MIT                     # optional
+compatibility: Requires Python 3.11+   # optional; max 500 chars
+metadata:                        # optional: arbitrary key-value pairs
+  author: my-team
+  version: "1.0"
+allowed-tools: Bash(git:*) Read  # optional: space-separated list of pre-approved tools
+always-on: false                 # extension: inject unconditionally (default false)
+user-invocable: true             # extension: show in manifest (default true)
+---
+
+Step-by-step instructions the agent follows when handling a payment request...
+```
+
+Standard fields (`name`, `description`, `license`, `compatibility`, `metadata`, `allowed-tools`)
+are defined by the [agentskills.io specification](https://agentskills.io/specification).
+Fields prefixed "extension" are specific to this library.
+
+### Loading file-based skills
+
+```python
+from pathlib import Path
+from openai_agents_skills import load_all_skills, SkillHooks
+from agents import Agent
+
+registry = await load_all_skills(cwd=Path.cwd())
+
+agent = Agent(
+    name="Assistant",
+    instructions="You are helpful.",
+    hooks=SkillHooks(registry=registry),
+)
+```
+
+`load_all_skills` searches the user layer (`~/.agent/skills/`) then the project layer
+(`.agent/skills/` relative to `cwd`). User-layer skills win on name conflicts.
 
 ---
 

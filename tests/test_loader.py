@@ -43,8 +43,10 @@ def _make_fields(
     description: str = "Test skill.",
     always_on: bool = False,
     allowed_tools: list[str] | None = None,
-    arg_names: list[str] | None = None,
     user_invocable: bool = True,
+    license_: str = "",
+    compatibility: str = "",
+    metadata: dict[str, str] | None = None,
 ) -> _SkillFields:
     return _SkillFields(
         name=name,
@@ -52,8 +54,10 @@ def _make_fields(
         always_on=always_on,
         allowed_tools=allowed_tools or [],
         argument_hint="",
-        arg_names=arg_names or [],
         user_invocable=user_invocable,
+        license_=license_,
+        compatibility=compatibility,
+        metadata=metadata or {},
     )
 
 
@@ -76,15 +80,18 @@ _FULL_SKILL_MD = """\
 ---
 name: full-skill
 description: A fully-specified skill.
+license: MIT
+compatibility: Requires Python 3.11+
+metadata:
+  author: test-org
+  version: "1.0"
 allowed-tools:
   - tool_a
   - tool_b
 argument-hint: "[target]"
-arguments:
-  - target
 user-invocable: true
 ---
-Run on $target.
+Run on $ARGUMENTS.
 """
 
 
@@ -105,16 +112,14 @@ class TestFileSkill:
         blocks = await skill.get_prompt_blocks(None, None)
         assert blocks == [{"role": "user", "content": "Say hello!"}]
 
-    async def test_get_prompt_blocks_applies_named_arg_substitution(self, tmp_path: Path) -> None:
+    async def test_get_prompt_blocks_applies_arguments_substitution(self, tmp_path: Path) -> None:
         skill = FileSkill(
-            fields=_make_fields(
-                name="connect", description="Connects.", arg_names=["host", "port"]
-            ),
-            body="Connect to $host on $port.",
+            fields=_make_fields(name="connect", description="Connects."),
+            body="Connect to $ARGUMENTS.",
             file_path=tmp_path / "connect" / "SKILL.md",
         )
         blocks = await skill.get_prompt_blocks(None, None, args="myserver 8080")
-        assert blocks[0]["content"] == "Connect to myserver on 8080."
+        assert blocks[0]["content"] == "Connect to myserver 8080."
 
     async def test_get_prompt_blocks_applies_variable_substitution(self, tmp_path: Path) -> None:
         skill = FileSkill(
@@ -151,8 +156,8 @@ class TestFileSkill:
 
     async def test_cache_different_args_produce_independent_entries(self, tmp_path: Path) -> None:
         skill = FileSkill(
-            fields=_make_fields(arg_names=["val"]),
-            body="Value: $val.",
+            fields=_make_fields(),
+            body="Value: $ARGUMENTS.",
             file_path=tmp_path / "x" / "SKILL.md",
         )
         blocks_a = await skill.get_prompt_blocks(None, None, args="alpha")
@@ -163,15 +168,15 @@ class TestFileSkill:
 
     async def test_cache_empty_args_cached_separately_from_nonempty(self, tmp_path: Path) -> None:
         skill = FileSkill(
-            fields=_make_fields(arg_names=["x"]),
-            body="x=$x",
+            fields=_make_fields(),
+            body="Value: $ARGUMENTS",
             file_path=tmp_path / "x" / "SKILL.md",
         )
         empty = await skill.get_prompt_blocks(None, None, args="")
         filled = await skill.get_prompt_blocks(None, None, args="hello")
         assert empty is not filled
-        assert empty[0]["content"] == "x=$x"
-        assert filled[0]["content"] == "x=hello"
+        assert empty[0]["content"] == "Value: $ARGUMENTS"
+        assert filled[0]["content"] == "Value: hello"
 
     # ------------------------------------------------------------------
     # Attributes
@@ -183,6 +188,9 @@ class TestFileSkill:
             description="My description.",
             allowed_tools=["tool_x"],
             user_invocable=False,
+            license_="MIT",
+            compatibility="Requires Python 3.11+",
+            metadata={"author": "test-org"},
         )
         skill = FileSkill(fields=fields, body="body", file_path=tmp_path / "SKILL.md")
         assert skill.name == "my-skill"
@@ -190,6 +198,9 @@ class TestFileSkill:
         assert skill.always_on is False
         assert skill.allowed_tools == ["tool_x"]
         assert skill.user_invocable is False
+        assert skill.license_ == "MIT"
+        assert skill.compatibility == "Requires Python 3.11+"
+        assert skill.metadata == {"author": "test-org"}
 
     def test_allowed_tools_is_instance_copy(self, tmp_path: Path) -> None:
         """FileSkill.allowed_tools must not share the class-level list."""
@@ -292,20 +303,16 @@ class TestParseSkillFile:
         assert fields.always_on is False
         assert fields.allowed_tools == []
         assert fields.argument_hint == ""
-        assert fields.arg_names == []
         assert fields.user_invocable is True
+        assert fields.license_ == ""
+        assert fields.compatibility == ""
+        assert fields.metadata == {}
 
     def test_allowed_tools_parsed_as_list(self) -> None:
         content = "---\ndescription: D.\nallowed-tools:\n  - t_a\n  - t_b\n---\nbody\n"
         result = _parse_skill_file(content, "x")
         assert result is not None
         assert result[0].allowed_tools == ["t_a", "t_b"]
-
-    def test_arguments_parsed_as_list(self) -> None:
-        content = "---\ndescription: D.\narguments:\n  - host\n  - port\n---\nbody\n"
-        result = _parse_skill_file(content, "x")
-        assert result is not None
-        assert result[0].arg_names == ["host", "port"]
 
     def test_user_invocable_false_parsed(self) -> None:
         content = "---\ndescription: D.\nuser-invocable: false\n---\nbody\n"
@@ -315,12 +322,76 @@ class TestParseSkillFile:
 
     def test_name_with_path_separator_raises(self) -> None:
         content = "---\nname: ../evil\ndescription: D.\n---\nbody\n"
-        with pytest.raises(ValueError, match="invalid path characters"):
+        with pytest.raises(ValueError, match="invalid"):
             _parse_skill_file(content, "x")
 
-    def test_argument_with_path_separator_raises(self) -> None:
-        content = "---\ndescription: D.\narguments:\n  - ../evil\n---\nbody\n"
-        with pytest.raises(ValueError, match="invalid path characters"):
+    def test_allowed_tools_parsed_from_space_separated_string(self) -> None:
+        content = "---\ndescription: D.\nallowed-tools: tool_a tool_b\n---\nbody\n"
+        result = _parse_skill_file(content, "x")
+        assert result is not None
+        assert result[0].allowed_tools == ["tool_a", "tool_b"]
+
+    def test_allowed_tools_string_with_complex_names(self) -> None:
+        content = "---\ndescription: D.\nallowed-tools: Bash(git:*) Bash(jq:*) Read\n---\nbody\n"
+        result = _parse_skill_file(content, "x")
+        assert result is not None
+        assert result[0].allowed_tools == ["Bash(git:*)", "Bash(jq:*)", "Read"]
+
+    def test_license_field_parsed(self) -> None:
+        content = "---\ndescription: D.\nlicense: Apache-2.0\n---\nbody\n"
+        result = _parse_skill_file(content, "x")
+        assert result is not None
+        assert result[0].license_ == "Apache-2.0"
+
+    def test_compatibility_field_parsed(self) -> None:
+        content = "---\ndescription: D.\ncompatibility: Requires Python 3.11+\n---\nbody\n"
+        result = _parse_skill_file(content, "x")
+        assert result is not None
+        assert result[0].compatibility == "Requires Python 3.11+"
+
+    def test_metadata_field_parsed(self) -> None:
+        content = (
+            "---\ndescription: D.\nmetadata:\n  author: test-org\n  version: '1.0'\n---\nbody\n"
+        )
+        result = _parse_skill_file(content, "x")
+        assert result is not None
+        assert result[0].metadata == {"author": "test-org", "version": "1.0"}
+
+    def test_name_with_uppercase_raises(self) -> None:
+        content = "---\nname: myskill\ndescription: D.\n---\nbody\n"
+        result = _parse_skill_file(content, "myskill")
+        assert result is not None  # lowercase is valid
+
+        content = "---\nname: MySkill\ndescription: D.\n---\nbody\n"
+        with pytest.raises(ValueError, match="invalid"):
+            _parse_skill_file(content, "myskill")
+
+    def test_name_with_consecutive_hyphens_raises(self) -> None:
+        content = "---\nname: pdf--processing\ndescription: D.\n---\nbody\n"
+        with pytest.raises(ValueError, match="consecutive hyphens"):
+            _parse_skill_file(content, "pdf--processing")
+
+    def test_name_with_leading_hyphen_raises(self) -> None:
+        content = "---\nname: -skill\ndescription: D.\n---\nbody\n"
+        with pytest.raises(ValueError, match="invalid"):
+            _parse_skill_file(content, "x")
+
+    def test_name_too_long_raises(self) -> None:
+        long_name = "a" * 65
+        content = f"---\nname: {long_name}\ndescription: D.\n---\nbody\n"
+        with pytest.raises(ValueError, match="64 characters"):
+            _parse_skill_file(content, long_name)
+
+    def test_description_too_long_raises(self) -> None:
+        long_desc = "a" * 1025
+        content = f"---\ndescription: {long_desc}\n---\nbody\n"
+        with pytest.raises(ValueError, match="1024 characters"):
+            _parse_skill_file(content, "x")
+
+    def test_compatibility_too_long_raises(self) -> None:
+        long_compat = "a" * 501
+        content = f"---\ndescription: D.\ncompatibility: {long_compat}\n---\nbody\n"
+        with pytest.raises(ValueError, match="500 characters"):
             _parse_skill_file(content, "x")
 
 
@@ -424,8 +495,7 @@ class TestLoadSkillsFromDir:
         assert "with-args" in skill_map
         wa = skill_map["with-args"]
         blocks = await wa.get_prompt_blocks(None, None, args="myhost 9090")
-        assert "myhost" in blocks[0]["content"]
-        assert "9090" in blocks[0]["content"]
+        assert "myhost 9090" in blocks[0]["content"]
 
     async def test_with_tools_fixture_has_allowed_tools(self) -> None:
         results = await load_skills_from_dir(_FIXTURES_DIR, SkillSource.PROJECT)

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -133,8 +134,10 @@ class _SkillFields:
     always_on: bool = False
     allowed_tools: list[str] = field(default_factory=list)
     argument_hint: str = ""
-    arg_names: list[str] = field(default_factory=list)
     user_invocable: bool = True
+    license_: str = ""
+    compatibility: str = ""
+    metadata: dict[str, str] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -194,10 +197,12 @@ class FileSkill(Skill):
         self.always_on = fields.always_on
         self.allowed_tools: list[str] = list(fields.allowed_tools)
         self.user_invocable: bool = fields.user_invocable
+        self.license_: str = fields.license_
+        self.compatibility: str = fields.compatibility
+        self.metadata: dict[str, str] = dict(fields.metadata)
         self.source = source
         self.file_path = file_path
         self._body = body
-        self._arg_names = list(fields.arg_names)
         self._variables: dict[str, str] = dict(variables) if variables else {}
         self._cache: dict[str, list[Any]] = {}
 
@@ -229,7 +234,7 @@ class FileSkill(Skill):
                 :func:`~openai_agents_skills.substitution.substitute_args`).
         """
         if args not in self._cache:
-            body = substitute_args(self._body, args, self._arg_names, self._variables)
+            body = substitute_args(self._body, args, self._variables)
             self._cache[args] = [{"role": "user", "content": body}]
         return self._cache[args]
 
@@ -281,6 +286,29 @@ async def _read_skill_file(path: Path) -> str:
         The full text content of the file, decoded as UTF-8.
     """
     return await asyncio.to_thread(path.read_text, encoding="utf-8")
+
+
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$")
+
+
+def _validate_skill_name(name: str) -> None:
+    """Validate a skill name per the agentskills.io specification.
+
+    Rules: 1-64 chars, lowercase letters/digits/hyphens only, no leading or
+    trailing hyphen, no consecutive hyphens.
+
+    Raises:
+        ValueError: If the name violates any rule.
+    """
+    if len(name) > 64:
+        raise ValueError(f"Skill name exceeds 64 characters: {name!r}")
+    if not _SKILL_NAME_RE.match(name):
+        raise ValueError(
+            f"Skill name {name!r} is invalid: must contain only lowercase letters,"
+            " numbers, and hyphens, and must not start or end with a hyphen."
+        )
+    if "--" in name:
+        raise ValueError(f"Skill name {name!r} contains consecutive hyphens.")
 
 
 def _check_no_path_seps(value: str, field_name: str) -> None:
@@ -374,36 +402,43 @@ def _parse_skill_file(content: str, dir_name: str) -> tuple[_SkillFields, str] |
             dir_name,
         )
         return None
+    if len(description) > 1024:
+        raise ValueError(f"Skill in {dir_name!r}: 'description' exceeds 1024 characters.")
 
     raw_name = fields_dict.get("name", dir_name)
     name = str(raw_name).strip() if raw_name else dir_name
     if not name:
         name = dir_name
-    _check_no_path_seps(name, "name")
-
-    raw_args: list[str] = []
-    if "arguments" in fields_dict:
-        arg_value = fields_dict["arguments"]
-        if isinstance(arg_value, list):
-            raw_args = [str(a) for a in arg_value]
-        else:
-            _log.debug(
-                "Skill %r: 'arguments' field is not a list; ignoring.",
-                name,
-            )
-    for arg in raw_args:
-        _check_no_path_seps(arg, "arguments")
+    _validate_skill_name(name)
+    if "name" in fields_dict and name != dir_name:
+        _log.debug("Skill name %r does not match directory name %r.", name, dir_name)
 
     allowed_tools: list[str] = []
     if "allowed-tools" in fields_dict:
         tools_value = fields_dict["allowed-tools"]
-        if isinstance(tools_value, list):
+        if isinstance(tools_value, str):
+            allowed_tools = tools_value.split()
+        elif isinstance(tools_value, list):
             allowed_tools = [str(t) for t in tools_value]
         else:
-            _log.debug("Skill %r: 'allowed-tools' field is not a list; ignoring.", name)
+            _log.debug("Skill %r: 'allowed-tools' is not a string or list; ignoring.", name)
 
     user_invocable_raw = fields_dict.get("user-invocable", True)
     user_invocable = bool(user_invocable_raw)
+
+    license_ = str(fields_dict.get("license", "")).strip()
+
+    compatibility = str(fields_dict.get("compatibility", "")).strip()
+    if len(compatibility) > 500:
+        raise ValueError(f"Skill {name!r}: 'compatibility' exceeds 500 characters.")
+
+    metadata: dict[str, str] = {}
+    if "metadata" in fields_dict:
+        meta_value = fields_dict["metadata"]
+        if isinstance(meta_value, dict):
+            metadata = {str(k): str(v) for k, v in meta_value.items()}
+        else:
+            _log.debug("Skill %r: 'metadata' field is not a mapping; ignoring.", name)
 
     skill_fields = _SkillFields(
         name=name,
@@ -411,8 +446,10 @@ def _parse_skill_file(content: str, dir_name: str) -> tuple[_SkillFields, str] |
         always_on=bool(fields_dict.get("always-on", False)),
         allowed_tools=allowed_tools,
         argument_hint=str(fields_dict.get("argument-hint", "")).strip(),
-        arg_names=raw_args,
         user_invocable=user_invocable,
+        license_=license_,
+        compatibility=compatibility,
+        metadata=metadata,
     )
     return skill_fields, body.strip()
 
