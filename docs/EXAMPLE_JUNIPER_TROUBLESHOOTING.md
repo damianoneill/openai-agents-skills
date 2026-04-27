@@ -21,7 +21,7 @@ three problems:
   not apply to the current task.
 
 `openai-agents-skills` solves this by making instructions **composable and selective**.
-A *Skill* is a named block of instructions that knows when it is relevant. The library
+A _Skill_ is a named block of instructions that knows when it is relevant. The library
 injects only the skills that matter for each user message, leaving the rest out of the
 model's context entirely.
 
@@ -34,14 +34,15 @@ stays lean and focused.
 
 ## Key Concepts
 
-| Concept | What it does |
-|---|---|
-| **`Skill`** | A named unit of instructions. Implements `get_prompt_blocks()` which returns the content to prepend to the model's input. |
-| **Always-on skill** | A skill with `always_on=True`. Injects on every LLM call unconditionally. Used for standing policies, org context, handoff rules. |
-| **Routed skill** | A skill with `always_on=False` (default). Only injects when a router selects it as relevant to the current message. |
-| **`SkillRegistry`** | Holds all registered skills and knows which are always-on vs routable. |
-| **`LLMSkillRouter`** | Sends the user's message and a skill manifest to a lightweight model. Returns which routed skills to activate. Results are LRU-cached so repeated messages within a session pay the routing cost only once. |
-| **`SkillHooks`** | An `AgentHooks` subclass that wires the registry into the OpenAI Agents SDK loop. No monkey-patching — it uses the SDK's standard extension point. |
+| Concept                    | What it does                                                                                                                                                                                                                                |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`Skill`**                | A named unit of instructions. Implements `get_prompt_blocks()` which returns the content to prepend to the model's input.                                                                                                                   |
+| **Always-on skill**        | A skill with `always_on=True`. Injects on every LLM call unconditionally. Used for standing policies, org context, handoff rules.                                                                                                           |
+| **Routed skill**           | A skill with `always_on=False` (default). Only injects when a router selects it as relevant to the current message.                                                                                                                         |
+| **`SkillRegistry`**        | Holds all registered skills and knows which are always-on vs routable.                                                                                                                                                                      |
+| **`LLMSkillRouter`**       | Sends the user's message and a skill manifest to a lightweight model. Returns which routed skills to activate. Results are LRU-cached so repeated messages within a session pay the routing cost only once.                                 |
+| **`SkillHooks`**           | An `AgentHooks` subclass that wires the registry into the OpenAI Agents SDK loop. No monkey-patching — it uses the SDK's standard extension point.                                                                                          |
+| **`FileSkill` / SKILL.md** | A skill loaded from a Markdown file with YAML frontmatter. The body may contain `$ARGUMENTS` as a substitution placeholder (matching the [agentskills.io](https://agentskills.io) specification), plus `${KEY}` / `$KEY` variable patterns. |
 
 ---
 
@@ -130,18 +131,25 @@ agent = Agent(
 
 ### Skills Registered
 
-| Skill name            | `description` (routing signal)                                                                                                                         | Routing                   |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------- |
-| `bgp-troubleshooting` | "BGP session diagnostics and peer flap analysis. Use when user reports BGP session issues, peer flapping, route withdrawal, or AS-path problems."      | Routed (selective)        |
-| `log-parser`          | "Parse and interpret Junos syslog messages and error codes. Use when user provides log output, syslog messages, or Juniper error codes."               | Routed (selective)        |
+| Skill name            | `description` (routing signal)                                                                                                                           | Routing                   |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| `bgp-troubleshooting` | "BGP session diagnostics and peer flap analysis. Use when user reports BGP session issues, peer flapping, route withdrawal, or AS-path problems."        | Routed (selective)        |
+| `log-parser`          | "Parse and interpret Junos syslog messages and error codes. Use when user provides log output, syslog messages, or Juniper error codes."                 | Routed (selective)        |
 | `junos-cli-reference` | "Junos CLI commands, commit syntax, and operational-mode reference. Use when user needs show commands, commit syntax, or operational-mode CLI guidance." | Routed (selective)        |
-| `escalation-policy`   | "When and how to escalate to Juniper TAC." (`always_on=True`)                                                                                          | Always-on (unconditional) |
+| `escalation-policy`   | "When and how to escalate to Juniper TAC." (`always_on=True`)                                                                                            | Always-on (unconditional) |
 
 Because `escalation-policy` has **`always_on=True`**, it is never passed to the
 router — it injects on every LLM call as long as `is_enabled()` returns `True`.
 
 The other three skills use `always_on=False` (default), so they only inject when the
 `LLMSkillRouter` selects them for the current message.
+
+> **SKILL.md note:** Skill names must follow the [agentskills.io](https://agentskills.io)
+> specification — lowercase letters, digits, and hyphens only; 1–64 characters; no
+> leading/trailing hyphen; no consecutive hyphens (`--`). All four names above are valid.
+> Optional frontmatter fields `license`, `compatibility` (≤ 500 chars), and `metadata`
+> (key/value map) are supported for documentation and tooling purposes but do not affect
+> routing or injection behaviour.
 
 ---
 
