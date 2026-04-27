@@ -39,7 +39,7 @@ stays lean and focused.
 | **`Skill`**                | A named unit of instructions. Implements `get_prompt_blocks()` which returns the content to prepend to the model's input.                                                                                                                   |
 | **Always-on skill**        | A skill with `always_on=True`. Injects on every LLM call unconditionally. Used for standing policies, org context, handoff rules.                                                                                                           |
 | **Routed skill**           | A skill with `always_on=False` (default). Only injects when a router selects it as relevant to the current message.                                                                                                                         |
-| **`SkillRegistry`**        | Holds all registered skills and knows which are always-on vs routable.                                                                                                                                                                      |
+| **`SkillRegistry`**        | Holds all registered skills and knows which are always-on vs routable. One registry instance per agent — registries are not shared across agents.                                                                                           |
 | **`LLMSkillRouter`**       | Sends the user's message and a skill manifest to a lightweight model. Returns which routed skills to activate. Results are LRU-cached so repeated messages within a session pay the routing cost only once.                                 |
 | **`SkillHooks`**           | An `AgentHooks` subclass that wires the registry into the OpenAI Agents SDK loop. No monkey-patching — it uses the SDK's standard extension point.                                                                                          |
 | **`FileSkill` / SKILL.md** | A skill loaded from a Markdown file with YAML frontmatter. The body may contain `$ARGUMENTS` as a substitution placeholder (matching the [agentskills.io](https://agentskills.io) specification), plus `${KEY}` / `$KEY` variable patterns. |
@@ -128,6 +128,10 @@ agent = Agent(
     hooks=SkillHooks(registry=registry, routing_context_turns=3),
 )
 ```
+
+Each agent has its own `SkillRegistry` instance. Skills registered with one agent are
+invisible to any other agent's router — if you run multiple specialised agents, construct
+a separate registry for each and attach it via its own `SkillHooks`.
 
 ### Skills Registered
 
@@ -404,3 +408,125 @@ class LogParserSkill(Skill):
 With this, `log-parser` is automatically queued after every `run_show_command`
 invocation — even if the user message that triggered the tool call did not mention
 logs — and its prompt blocks are prepended at the start of the next LLM call.
+
+`triggers_after_tools` is the right mechanism when a tool always warrants the same skill
+regardless of what it returned. When a tool can return different classifications and each
+classification warrants a different skill, see the next section.
+
+---
+
+## Content-Driven Skill Dispatch with `make_invoke_skill_tool`
+
+The router selects skills based on the user's message. Tool-result triggers select
+skills based on which tool ran. Neither mechanism can select a skill based on a value
+_inside_ a tool's output — for example, a `root_cause` field returned by a diagnostic
+pipeline that classifies the failure differently on each invocation.
+
+`make_invoke_skill_tool` solves this. It creates a standard `FunctionTool` that the
+model can call to retrieve any registered skill by name. The dispatch logic lives in
+the agent's `instructions`, making it explicit and deterministic rather than
+probabilistic:
+
+```python
+from openai_agents_skills import make_invoke_skill_tool
+
+# Register one skill per failure class
+registry.register(NexthopUnresolvableSkill())   # name = "nexthop-unresolvable"
+registry.register(QueueCongestionSkill())        # name = "queue-congestion"
+registry.register(EcmpBlackholeSkill())          # name = "ecmp-blackhole"
+registry.register(UnclassifiedSkill())           # name = "unclassified-investigation"
+
+agent = Agent(
+    name="Diagnostic Agent",
+    model="gpt-4o",
+    instructions="""
+        You are an expert network diagnostic agent.
+
+        After any tool returns a result containing a root_cause field, immediately
+        call invoke_skill with the matching skill name:
+          NEXTHOP_UNRESOLVABLE  → invoke_skill("nexthop-unresolvable")
+          QUEUE_CONGESTION      → invoke_skill("queue-congestion")
+          ECMP_BLACKHOLE        → invoke_skill("ecmp-blackhole")
+          UNKNOWN               → invoke_skill("unclassified-investigation")
+
+        The skill will return interpretation and remediation guidance. Apply it to
+        the diagnostic evidence before responding to the user.
+    """,
+    tools=[
+        run_diagnostic_pipeline,
+        make_invoke_skill_tool(registry),
+    ],
+    hooks=SkillHooks(registry=registry),
+)
+```
+
+`invoke_skill` returns the skill's prompt content as a tool result string. The model
+receives the guidance and the diagnostic evidence together in the same LLM call and
+reasons about them simultaneously — no extra round-trip is needed.
+
+The mapping table in `instructions` is the only thing that changes when a new failure
+class is added: register the new skill, add one line to the table. No library or
+application code changes are required.
+
+### Router vs. `invoke_skill` — when to use each
+
+| Mechanism                | Best for                                                                                                                     |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `LLMSkillRouter`         | Broad topic gating from conversational user messages — "use BGP checklist when the user mentions BGP". Tolerates ambiguity.  |
+| `triggers_after_tools`   | Unconditional injection after a specific tool runs, regardless of message content.                                           |
+| `make_invoke_skill_tool` | Precise, deterministic dispatch driven by structured values in tool output — classification codes, enum fields, error types. |
+
+Both mechanisms can coexist in the same agent. A common pattern is to use the router
+for broad topic skills (`bgp-troubleshooting`, `junos-cli-reference`) and
+`invoke_skill` for narrow use-case skills whose activation depends on what a tool
+returned.
+
+---
+
+## Proactive Sessions — Agent-Initiated Entry
+
+The examples above assume a human sends the first message. Some deployments need the
+agent to open a session autonomously — for example, when an on-device monitoring system
+detects an anomaly and notifies the agent before any user interaction has occurred.
+
+In this pattern the calling code constructs a synthetic first message and passes it
+directly to `Runner.run()`:
+
+```python
+synthetic_prompt = (
+    "Automated alert from monitoring system.\n"
+    "Device: qfx-spine-01\n"
+    "Event: sustained packet drop on interface et-0/0/0\n"
+    "Root cause: NEXTHOP_UNRESOLVABLE\n"
+    "Evidence: <pre-collected diagnostic summary>\n"
+    "Analyse the evidence and produce a remediation recommendation."
+)
+
+result = await Runner.run(agent, input=synthetic_prompt)
+```
+
+The agent loop treats this exactly like a user message. `on_llm_start` fires, always-on
+skills inject unconditionally, and the router receives the synthetic prompt as its
+routing context string.
+
+### Router behaviour with structured synthetic prompts
+
+`LLMSkillRouter` routes on the text of the message passed to it. A well-formed
+synthetic prompt that names a failure class clearly (as above) is sufficient for the
+router to select broadly scoped topic skills. However, the router is **not reliable**
+for selecting tightly scoped use-case skills (e.g. `nexthop-unresolvable` vs.
+`ecmp-blackhole`) from a structured field value — descriptions of closely related
+failure-class skills are too similar for the probabilistic router to distinguish
+reliably.
+
+The recommended approach for structured synthetic prompts:
+
+- Use the router for **broad topic skills** whose descriptions match naturally against
+  free text (e.g. `bgp-troubleshooting` when the prompt mentions BGP).
+- Use `invoke_skill` in the agent's `instructions` for **precise failure-class
+  dispatch** driven by a `root_cause` or equivalent classification field.
+
+This hybrid works for both entry paths — a human asking "prefix X is dropping traffic"
+and a monitoring system delivering a pre-classified `DiagnosticBundle` — because
+`invoke_skill` dispatch is driven by structured field values that are present in both
+cases.

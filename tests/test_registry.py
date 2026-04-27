@@ -1,4 +1,7 @@
-"""Tests for SkillRegistry — CRUD, skill_names, get_always_on, and select_for_message."""
+"""Tests for SkillRegistry.
+
+Covers: CRUD, skill_names, get_always_on, select_for_message, and per-agent isolation.
+"""
 
 from __future__ import annotations
 
@@ -465,3 +468,82 @@ class TestSelectForMessageWithRouter:
         # routable skills to forward.
         assert len(router.calls) == 0
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Per-agent registry isolation
+#
+# Documented claim: "Skills registered with one agent are invisible to any
+# other agent's router — if you run multiple specialised agents, construct a
+# separate registry for each and attach it via its own SkillHooks."
+# ---------------------------------------------------------------------------
+
+
+class TestPerAgentRegistryIsolation:
+    """Two independent SkillRegistry instances do not share skills or routing state."""
+
+    def test_skill_registered_in_one_registry_not_present_in_another(self) -> None:
+        """Registering a skill in registry_a has no effect on registry_b."""
+        registry_a = SkillRegistry()
+        registry_b = SkillRegistry()
+
+        registry_a.register(_AlwaysOnSkill())
+
+        assert "always_on" in registry_a.skill_names
+        assert "always_on" not in registry_b.skill_names
+
+    def test_unregister_from_one_registry_does_not_affect_another(self) -> None:
+        """Removing a skill from registry_a leaves registry_b completely unchanged."""
+        registry_a = SkillRegistry()
+        registry_b = SkillRegistry()
+
+        registry_a.register(_AlwaysOnSkill())
+        registry_b.register(_AlwaysOnSkill())
+
+        registry_a.unregister("always_on")
+
+        assert "always_on" not in registry_a.skill_names
+        assert "always_on" in registry_b.skill_names
+
+    def test_always_on_skills_from_separate_registries_are_independent(self) -> None:
+        """get_always_on() on each registry returns only that registry's own skills."""
+        registry_a = SkillRegistry()
+        registry_b = SkillRegistry()
+
+        registry_a.register(_AlwaysOnSkill())  # name = "always_on"
+        registry_b.register(_SecondAlwaysOnSkill())  # name = "second"
+
+        always_on_a = [s.name for s in registry_a.get_always_on()]
+        always_on_b = [s.name for s in registry_b.get_always_on()]
+
+        assert always_on_a == ["always_on"]
+        assert always_on_b == ["second"]
+
+    async def test_router_for_registry_a_never_receives_skills_from_registry_b(
+        self,
+    ) -> None:
+        """The router attached to registry_a is only ever passed registry_a's skills,
+        never skills from registry_b — the two registries are completely isolated."""
+        router_a = MockRouter(names=[])
+        router_b = MockRouter(names=[])
+
+        registry_a = SkillRegistry(router=router_a)
+        registry_b = SkillRegistry(router=router_b)
+
+        registry_a.register(_RoutableSkill())  # name = "routable"
+        registry_b.register(_RoutableB())  # name = "routable_b"
+
+        await registry_a.select_for_message("any message")
+        await registry_b.select_for_message("any message")
+
+        # Router A was only ever shown "routable" — never "routable_b"
+        assert len(router_a.calls) == 1
+        names_seen_by_router_a = router_a.calls[0][1]
+        assert names_seen_by_router_a == ["routable"]
+        assert "routable_b" not in names_seen_by_router_a
+
+        # Router B was only ever shown "routable_b" — never "routable"
+        assert len(router_b.calls) == 1
+        names_seen_by_router_b = router_b.calls[0][1]
+        assert names_seen_by_router_b == ["routable_b"]
+        assert "routable" not in names_seen_by_router_b

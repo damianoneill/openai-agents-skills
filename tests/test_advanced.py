@@ -716,3 +716,94 @@ class TestHookDeduplication:
             1 for b in input_items if isinstance(b, dict) and b.get("content") == "unique-block"
         )
         assert unique_block_count == 1
+
+
+# ---------------------------------------------------------------------------
+# triggers_after_tools fires on tool name, not tool output content
+#
+# Documented claim: "triggers_after_tools is the right mechanism when a tool
+# always warrants the same skill regardless of what it returned. When a tool
+# can return different classifications and each classification warrants a
+# different skill, see the next section."
+# ---------------------------------------------------------------------------
+
+
+class TestTriggersAfterToolsIgnoresContent:
+    """triggers_after_tools dispatch is based solely on tool name, never on
+    the content of the tool's return value."""
+
+    async def test_same_skill_queued_for_different_result_strings_from_same_tool(
+        self,
+    ) -> None:
+        """Two on_tool_end calls with the same tool name but completely different
+        result strings both queue the same skill — the result is never inspected."""
+        registry = SkillRegistry()
+        skill = _SimpleSkill("classifier", triggers_after_tools=["run_pipeline"])
+        registry.register(skill)
+
+        hooks = _hooks_with_registry(registry)
+        ctx = _mock_context()
+        agent = _mock_agent()
+
+        await hooks.on_start(ctx, agent)
+        state = _get_run_state()
+
+        # First call — result indicates one classification
+        await hooks.on_tool_end(
+            ctx, agent, _mock_tool("run_pipeline"), '{"root_cause": "NEXTHOP_UNRESOLVABLE"}'
+        )
+        assert any(s.name == "classifier" for s in state.pending_skills)
+
+        # Reset pending and call again with a completely different result
+        state.pending_skills.clear()
+        await hooks.on_tool_end(
+            ctx, agent, _mock_tool("run_pipeline"), '{"root_cause": "QUEUE_CONGESTION"}'
+        )
+        # Same skill still queued — content made no difference
+        assert any(s.name == "classifier" for s in state.pending_skills)
+
+    async def test_different_tool_name_does_not_queue_skill_regardless_of_result_content(
+        self,
+    ) -> None:
+        """A tool with the wrong name never queues the skill, even when its result
+        content looks identical to results produced by the registered tool."""
+        registry = SkillRegistry()
+        registry.register(_SimpleSkill("my-skill", triggers_after_tools=["tool-a"]))
+
+        hooks = _hooks_with_registry(registry)
+        ctx = _mock_context()
+        agent = _mock_agent()
+
+        await hooks.on_start(ctx, agent)
+        state = _get_run_state()
+
+        # Run tool-b — content is identical to what tool-a would return
+        await hooks.on_tool_end(
+            ctx, agent, _mock_tool("tool-b"), '{"root_cause": "NEXTHOP_UNRESOLVABLE"}'
+        )
+
+        assert not any(s.name == "my-skill" for s in state.pending_skills)
+
+    async def test_all_skills_for_a_tool_name_are_queued_regardless_of_result(
+        self,
+    ) -> None:
+        """Every skill declaring a given tool name is queued unconditionally —
+        the result content cannot suppress any of them."""
+        registry = SkillRegistry()
+        registry.register(_SimpleSkill("skill-one", triggers_after_tools=["pipeline"]))
+        registry.register(_SimpleSkill("skill-two", triggers_after_tools=["pipeline"]))
+        registry.register(_SimpleSkill("unrelated", triggers_after_tools=["other-tool"]))
+
+        hooks = _hooks_with_registry(registry)
+        ctx = _mock_context()
+        agent = _mock_agent()
+
+        await hooks.on_start(ctx, agent)
+        state = _get_run_state()
+
+        await hooks.on_tool_end(ctx, agent, _mock_tool("pipeline"), "any result whatsoever")
+
+        queued = {s.name for s in state.pending_skills}
+        assert "skill-one" in queued
+        assert "skill-two" in queued
+        assert "unrelated" not in queued  # registered for a different tool name
