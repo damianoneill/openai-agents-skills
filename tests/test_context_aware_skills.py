@@ -7,64 +7,19 @@ from typing import Any
 from unittest.mock import MagicMock
 
 from agents.tool_context import ToolContext
+from conftest import (
+    fire_llm_end,
+    fire_llm_start,
+    fire_tool_end,
+    make_hooks,
+    make_mock_agent,
+    make_mock_context,
+    make_run_hooks,
+)
 
 from openai_agents_skills import Skill, SkillHooks, SkillRegistry, make_invoke_skill_tool
 from openai_agents_skills._state import _get_run_state  # noqa: F401
 from openai_agents_skills.hooks import RunSkillHooks
-
-
-def _mock_context() -> Any:
-    return MagicMock()
-
-
-def _mock_agent() -> Any:
-    return MagicMock()
-
-
-def _mock_tool(name: str) -> Any:
-    tool = MagicMock()
-    tool.name = name
-    return tool
-
-
-def _hooks_with_registry(registry: SkillRegistry) -> SkillHooks:
-    return SkillHooks(
-        registry=registry,
-        on_skill_error=lambda s, e: (_ for _ in ()).throw(e),
-    )
-
-
-def _run_hooks_with_registry(registry: SkillRegistry) -> RunSkillHooks:
-    return RunSkillHooks(
-        registry=registry,
-        on_skill_error=lambda s, e: (_ for _ in ()).throw(e),
-    )
-
-
-async def _fire(hooks: Any, input_items: list[Any], context: Any = None, agent: Any = None) -> None:
-    await hooks.on_llm_start(
-        context=context,
-        agent=agent,
-        system_prompt=None,
-        input_items=input_items,
-    )
-
-
-async def _fire_end(hooks: Any, context: Any = None, agent: Any = None) -> None:
-    await hooks.on_llm_end(
-        context=context,
-        agent=agent,
-        response=None,
-    )
-
-
-async def _fire_tool_end(
-    hooks: Any, tool_name: str, context: Any = None, agent: Any = None
-) -> None:
-    tool = MagicMock()
-    tool.name = tool_name
-    await hooks.on_tool_end(context=context, agent=agent, tool=tool, result="")
-
 
 # ---------------------------------------------------------------------------
 # 1 & 3.  get_prompt_blocks forwarding through SkillHooks (identity checks)
@@ -87,9 +42,9 @@ class TestContextForwardingSkillHooks:
                 return []
 
         hooks = SkillHooks(skills=[_CapturingSkill()])
-        ctx = _mock_context()
-        await hooks.on_start(_mock_context(), _mock_agent())
-        await _fire(hooks, [], context=ctx)
+        ctx = make_mock_context()
+        await hooks.on_start(make_mock_context(), make_mock_agent())
+        await fire_llm_start(hooks, [], context=ctx)
 
         assert len(received) == 1
         assert received[0] is ctx
@@ -109,9 +64,9 @@ class TestContextForwardingSkillHooks:
                 return []
 
         hooks = SkillHooks(skills=[_CapturingSkill()])
-        agent = _mock_agent()
-        await hooks.on_start(_mock_context(), _mock_agent())
-        await _fire(hooks, [], agent=agent)
+        agent = make_mock_agent()
+        await hooks.on_start(make_mock_context(), make_mock_agent())
+        await fire_llm_start(hooks, [], agent=agent)
 
         assert len(received) == 1
         assert received[0] is agent
@@ -134,9 +89,9 @@ class TestContextForwardingSkillHooks:
         ctx = MagicMock()
         ctx.context.org_id = "acme-123"
         hooks = SkillHooks(skills=[_OrgSkill()])
-        await hooks.on_start(_mock_context(), _mock_agent())
+        await hooks.on_start(make_mock_context(), make_mock_agent())
         input_items: list[Any] = []
-        await _fire(hooks, input_items, context=ctx)
+        await fire_llm_start(hooks, input_items, context=ctx)
 
         contents = [b["content"] for b in input_items if isinstance(b, dict)]
         assert any("acme-123" in c for c in contents)
@@ -158,9 +113,9 @@ class TestContextForwardingSkillHooks:
         agent = MagicMock()
         agent.name = "ResearchBot"
         hooks = SkillHooks(skills=[_AgentNameSkill()])
-        await hooks.on_start(_mock_context(), _mock_agent())
+        await hooks.on_start(make_mock_context(), make_mock_agent())
         input_items: list[Any] = []
-        await _fire(hooks, input_items, agent=agent)
+        await fire_llm_start(hooks, input_items, agent=agent)
 
         contents = [b["content"] for b in input_items if isinstance(b, dict)]
         assert any("ResearchBot" in c for c in contents)
@@ -181,7 +136,7 @@ class TestContextForwardingSkillHooks:
 
         hooks = SkillHooks(skills=[_FallbackSkill()])
         input_items: list[Any] = []
-        await _fire(hooks, input_items, context=None, agent=None)
+        await fire_llm_start(hooks, input_items, context=None, agent=None)
 
         contents = [b["content"] for b in input_items if isinstance(b, dict)]
         assert "fallback-content" in contents
@@ -209,9 +164,9 @@ class TestContextForwardingRunSkillHooks:
                 return []
 
         hooks = RunSkillHooks(skills=[_CapturingSkill()])
-        ctx = _mock_context()
-        await hooks.on_agent_start(_mock_context(), _mock_agent())
-        await _fire(hooks, [], context=ctx)
+        ctx = make_mock_context()
+        await hooks.on_agent_start(make_mock_context(), make_mock_agent())
+        await fire_llm_start(hooks, [], context=ctx)
 
         assert len(received) == 1
         assert received[0] is ctx
@@ -231,9 +186,9 @@ class TestContextForwardingRunSkillHooks:
                 return []
 
         hooks = RunSkillHooks(skills=[_CapturingSkill()])
-        agent = _mock_agent()
-        await hooks.on_agent_start(_mock_context(), _mock_agent())
-        await _fire(hooks, [], agent=agent)
+        agent = make_mock_agent()
+        await hooks.on_agent_start(make_mock_context(), make_mock_agent())
+        await fire_llm_start(hooks, [], agent=agent)
 
         assert len(received) == 1
         assert received[0] is agent
@@ -253,10 +208,10 @@ class TestContextForwardingRunSkillHooks:
                 return []
 
         hooks = RunSkillHooks(skills=[_PairCapturingSkill()])
-        ctx = _mock_context()
-        agent = _mock_agent()
-        await hooks.on_agent_start(_mock_context(), _mock_agent())
-        await _fire(hooks, [], context=ctx, agent=agent)
+        ctx = make_mock_context()
+        agent = make_mock_agent()
+        await hooks.on_agent_start(make_mock_context(), make_mock_agent())
+        await fire_llm_start(hooks, [], context=ctx, agent=agent)
 
         assert len(received_pairs) == 1
         got_ctx, got_agent = received_pairs[0]
@@ -289,7 +244,7 @@ class TestContextAwareIsEnabled:
         ctx.context.feature_on = True
         hooks = SkillHooks(skills=[_FlagGatedSkill()])
         input_items: list[Any] = []
-        await _fire(hooks, input_items, context=ctx)
+        await fire_llm_start(hooks, input_items, context=ctx)
 
         contents = [b["content"] for b in input_items if isinstance(b, dict)]
         assert "feature-content" in contents
@@ -311,7 +266,7 @@ class TestContextAwareIsEnabled:
 
         hooks = SkillHooks(skills=[_RequiresContextSkill()])
         input_items: list[Any] = []
-        await _fire(hooks, input_items, context=None)
+        await fire_llm_start(hooks, input_items, context=None)
 
         assert input_items == []
 
@@ -334,7 +289,7 @@ class TestContextAwareIsEnabled:
         ctx.context.feature_on = False
         hooks = SkillHooks(skills=[_FlagGatedSkill()])
         input_items: list[Any] = []
-        await _fire(hooks, input_items, context=ctx)
+        await fire_llm_start(hooks, input_items, context=ctx)
 
         assert input_items == []
 
@@ -357,7 +312,7 @@ class TestContextAwareIsEnabled:
         agent.name = "AllowedAgent"
         hooks = SkillHooks(skills=[_AgentGatedSkill()])
         input_items: list[Any] = []
-        await _fire(hooks, input_items, agent=agent)
+        await fire_llm_start(hooks, input_items, agent=agent)
 
         contents = [b["content"] for b in input_items if isinstance(b, dict)]
         assert "agent-specific-content" in contents
@@ -381,7 +336,7 @@ class TestContextAwareIsEnabled:
         agent.name = "SomeOtherAgent"
         hooks = SkillHooks(skills=[_AgentGatedSkill()])
         input_items: list[Any] = []
-        await _fire(hooks, input_items, agent=agent)
+        await fire_llm_start(hooks, input_items, agent=agent)
 
         assert input_items == []
 
@@ -402,9 +357,9 @@ class TestContextAwareIsEnabled:
             ) -> list[Any]:
                 return []
 
-        ctx = _mock_context()
+        ctx = make_mock_context()
         hooks = SkillHooks(skills=[_InspectingSkill()])
-        await _fire(hooks, [], context=ctx)
+        await fire_llm_start(hooks, [], context=ctx)
 
         assert len(received_in_is_enabled) == 1
         assert received_in_is_enabled[0] is ctx
@@ -426,9 +381,9 @@ class TestContextAwareIsEnabled:
             ) -> list[Any]:
                 return []
 
-        agent = _mock_agent()
+        agent = make_mock_agent()
         hooks = SkillHooks(skills=[_InspectingSkill()])
-        await _fire(hooks, [], agent=agent)
+        await fire_llm_start(hooks, [], agent=agent)
 
         assert len(received_in_is_enabled) == 1
         assert received_in_is_enabled[0] is agent
@@ -457,17 +412,17 @@ class TestContextAwareDeferredPaths:
 
         registry = SkillRegistry()
         registry.register(_PendingCaptureSkill())
-        hooks = _hooks_with_registry(registry)
-        await hooks.on_start(_mock_context(), _mock_agent())
+        hooks = make_hooks(registry)
+        await hooks.on_start(make_mock_context(), make_mock_agent())
 
-        tool_ctx = _mock_context()
-        await _fire_tool_end(hooks, "trigger_tool", context=tool_ctx)
-        await _fire_end(hooks, context=tool_ctx)
+        tool_ctx = make_mock_context()
+        await fire_tool_end(hooks, "trigger_tool", context=tool_ctx)
+        await fire_llm_end(hooks, context=tool_ctx)
 
-        next_ctx = _mock_context()
+        next_ctx = make_mock_context()
         assert next_ctx is not tool_ctx
         input_items: list[Any] = [{"role": "user", "content": "next-turn"}]
-        await _fire(hooks, input_items, context=next_ctx)
+        await fire_llm_start(hooks, input_items, context=next_ctx)
 
         assert len(received_context) == 1
         assert received_context[0] is next_ctx
@@ -489,16 +444,16 @@ class TestContextAwareDeferredPaths:
 
         registry = SkillRegistry()
         registry.register(_PendingCaptureSkill())
-        hooks = _hooks_with_registry(registry)
-        await hooks.on_start(_mock_context(), _mock_agent())
+        hooks = make_hooks(registry)
+        await hooks.on_start(make_mock_context(), make_mock_agent())
 
-        tool_agent = _mock_agent()
-        await _fire_tool_end(hooks, "my_tool", agent=tool_agent)
-        await _fire_end(hooks, agent=tool_agent)
+        tool_agent = make_mock_agent()
+        await fire_tool_end(hooks, "my_tool", agent=tool_agent)
+        await fire_llm_end(hooks, agent=tool_agent)
 
-        drain_agent = _mock_agent()
+        drain_agent = make_mock_agent()
         assert drain_agent is not tool_agent
-        await _fire(hooks, [], agent=drain_agent)
+        await fire_llm_start(hooks, [], agent=drain_agent)
 
         assert len(received_agent) == 1
         assert received_agent[0] is drain_agent
@@ -520,20 +475,20 @@ class TestContextAwareDeferredPaths:
 
         registry = SkillRegistry()
         registry.register(_PostTurnCaptureSkill())
-        hooks = _hooks_with_registry(registry)
-        await hooks.on_start(_mock_context(), _mock_agent())
+        hooks = make_hooks(registry)
+        await hooks.on_start(make_mock_context(), make_mock_agent())
 
-        turn1_ctx = _mock_context()
+        turn1_ctx = make_mock_context()
         items1: list[Any] = [{"role": "user", "content": "first"}]
-        await _fire(hooks, items1, context=turn1_ctx)
+        await fire_llm_start(hooks, items1, context=turn1_ctx)
         received_context.clear()  # discard direct injection from turn 1
 
-        await _fire_end(hooks, context=turn1_ctx)
+        await fire_llm_end(hooks, context=turn1_ctx)
 
-        turn2_ctx = _mock_context()
+        turn2_ctx = make_mock_context()
         assert turn2_ctx is not turn1_ctx
         items2: list[Any] = [{"role": "user", "content": "second"}]
-        await _fire(hooks, items2, context=turn2_ctx)
+        await fire_llm_start(hooks, items2, context=turn2_ctx)
 
         assert len(received_context) >= 1
         assert received_context[-1] is turn2_ctx
@@ -555,16 +510,16 @@ class TestContextAwareDeferredPaths:
 
         registry = SkillRegistry()
         registry.register(_ToolTriggeredSkill())
-        hooks = _hooks_with_registry(registry)
-        await hooks.on_start(_mock_context(), _mock_agent())
+        hooks = make_hooks(registry)
+        await hooks.on_start(make_mock_context(), make_mock_agent())
 
-        old_ctx = _mock_context()
-        await _fire_tool_end(hooks, "some_tool", context=old_ctx)
-        await _fire_end(hooks, context=old_ctx)
+        old_ctx = make_mock_context()
+        await fire_tool_end(hooks, "some_tool", context=old_ctx)
+        await fire_llm_end(hooks, context=old_ctx)
 
-        new_ctx = _mock_context()
+        new_ctx = make_mock_context()
         assert new_ctx is not old_ctx
-        await _fire(hooks, [], context=new_ctx)
+        await fire_llm_start(hooks, [], context=new_ctx)
 
         assert len(received_context) == 1
         assert received_context[0] is new_ctx
@@ -593,16 +548,15 @@ class TestContextAwareDeferredPaths:
 
         registry = SkillRegistry()
         registry.register(_GatedPendingSkill())
-        hooks = _hooks_with_registry(registry)
-        await hooks.on_start(_mock_context(), _mock_agent())
-
-        await _fire_tool_end(hooks, "gate_tool")
-        await _fire_end(hooks)
+        hooks = make_hooks(registry)
+        await hooks.on_start(make_mock_context(), make_mock_agent())
+        await fire_tool_end(hooks, "gate_tool")
+        await fire_llm_end(hooks)
 
         blocking_ctx = MagicMock()
         blocking_ctx.context.allow_skill = False
         items: list[Any] = []
-        await _fire(hooks, items, context=blocking_ctx)
+        await fire_llm_start(hooks, items, context=blocking_ctx)
 
         assert injected == []
         assert not any(b.get("content") == "gated-content" for b in items if isinstance(b, dict))
@@ -624,16 +578,16 @@ class TestContextAwareDeferredPaths:
 
         registry = SkillRegistry()
         registry.register(_PendingCaptureSkill())
-        hooks = _run_hooks_with_registry(registry)
-        await hooks.on_agent_start(_mock_context(), _mock_agent())
+        hooks = make_run_hooks(registry)
+        await hooks.on_agent_start(make_mock_context(), make_mock_agent())
 
-        tool_ctx = _mock_context()
-        await _fire_tool_end(hooks, "run_tool", context=tool_ctx)
-        await _fire_end(hooks, context=tool_ctx)
+        tool_ctx = make_mock_context()
+        await fire_tool_end(hooks, "run_tool", context=tool_ctx)
+        await fire_llm_end(hooks, context=tool_ctx)
 
-        drain_ctx = _mock_context()
+        drain_ctx = make_mock_context()
         assert drain_ctx is not tool_ctx
-        await _fire(hooks, [], context=drain_ctx)
+        await fire_llm_start(hooks, [], context=drain_ctx)
 
         assert len(received_context) == 1
         assert received_context[0] is drain_ctx
@@ -665,7 +619,7 @@ class TestContextForwardingViaRegistryGetAlwaysOn:
 
         registry = SkillRegistry()
         registry.register(_RecordingSkill())
-        ctx = _mock_context()
+        ctx = make_mock_context()
         registry.get_always_on(ctx)
 
         assert len(received_contexts) == 1
@@ -691,7 +645,7 @@ class TestContextForwardingViaRegistryGetAlwaysOn:
 
         registry = SkillRegistry()
         registry.register(_RecordingSkill())
-        agent = _mock_agent()
+        agent = make_mock_agent()
         registry.get_always_on(agent=agent)
 
         assert len(received_agents) == 1
@@ -768,13 +722,13 @@ class TestContextForwardingViaRegistryGetAlwaysOn:
         inactive_ctx = MagicMock()
         inactive_ctx.context.active = False
         inactive_items: list[Any] = []
-        await _fire(hooks, inactive_items, context=inactive_ctx)
-        await _fire_end(hooks, context=inactive_ctx)
+        await fire_llm_start(hooks, inactive_items, context=inactive_ctx)
+        await fire_llm_end(hooks, context=inactive_ctx)
 
         active_ctx = MagicMock()
         active_ctx.context.active = True
         active_items: list[Any] = []
-        await _fire(hooks, active_items, context=active_ctx)
+        await fire_llm_start(hooks, active_items, context=active_ctx)
 
         # manifest may be present; verify the skill content is absent for the inactive context
         assert not any(

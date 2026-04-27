@@ -12,13 +12,18 @@ Documented claims:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
+from conftest import (
+    MockRouter,
+    SimpleSkill,
+    extract_contents,
+    make_hooks,
+    make_mock_response,
+    make_mock_tool,
+)
 
 from openai_agents_skills import (
-    Skill,
-    SkillHooks,
     SkillRegistry,
 )
 from openai_agents_skills._state import _get_run_state
@@ -26,53 +31,6 @@ from openai_agents_skills._state import _get_run_state
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-class _SimpleSkill(Skill):
-    def __init__(
-        self,
-        name: str,
-        content: str = "injected",
-        always_on: bool = False,
-        triggers_after_tools: list[str] | None = None,
-    ) -> None:
-        self.name = name
-        self.description = f"Description for {name}"
-        self.always_on = always_on
-        self._content = content
-        self.triggers_after_tools = list(triggers_after_tools or [])
-
-    async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
-        return [{"role": "user", "content": self._content}]
-
-
-class _RecordingRouter:
-    """Router that records every call and returns a pre-configured list of names."""
-
-    def __init__(self, names: list[str]) -> None:
-        self._names = names
-        self.calls: list[tuple[str, list[str]]] = []
-
-    async def select(self, message: str, skills: list[Skill]) -> list[str]:
-        self.calls.append((message, [s.name for s in skills]))
-        return list(self._names)
-
-
-def _hooks(registry: SkillRegistry) -> SkillHooks:
-    return SkillHooks(
-        registry=registry,
-        on_skill_error=lambda s, e: (_ for _ in ()).throw(e),
-    )
-
-
-def _mock_tool(name: str) -> Any:
-    tool = MagicMock()
-    tool.name = name
-    return tool
-
-
-def _mock_response() -> Any:
-    return MagicMock()
 
 
 def _synthetic_prompt(
@@ -89,10 +47,6 @@ def _synthetic_prompt(
     )
 
 
-def _contents(items: list[Any]) -> list[str]:
-    return [i["content"] for i in items if isinstance(i, dict) and "content" in i]
-
-
 # ---------------------------------------------------------------------------
 # Always-on injection — synthetic vs human entry path
 # ---------------------------------------------------------------------------
@@ -107,17 +61,17 @@ class TestAlwaysOnSkillInjectsForSyntheticPrompt:
         not a human query."""
         registry = SkillRegistry()
         registry.register(
-            _SimpleSkill("escalation-policy", content="ESCALATION POLICY", always_on=True)
+            SimpleSkill("escalation-policy", content="ESCALATION POLICY", always_on=True)
         )
 
-        hooks = _hooks(registry)
+        hooks = make_hooks(registry)
         ctx = None  # type: ignore[arg-type]
         agent = None  # type: ignore[arg-type]
 
         items: list[Any] = [{"role": "user", "content": _synthetic_prompt()}]
         await hooks.on_llm_start(ctx, agent, None, items)
 
-        assert "ESCALATION POLICY" in _contents(items)
+        assert "ESCALATION POLICY" in extract_contents(items)
 
     @pytest.mark.asyncio
     async def test_synthetic_and_human_prompts_produce_identical_always_on_injection(
@@ -128,14 +82,14 @@ class TestAlwaysOnSkillInjectsForSyntheticPrompt:
 
         def _make_registry() -> SkillRegistry:
             r = SkillRegistry()
-            r.register(_SimpleSkill("policy", content="POLICY CONTENT", always_on=True))
+            r.register(SimpleSkill("policy", content="POLICY CONTENT", always_on=True))
             return r
 
         human_items: list[Any] = [{"role": "user", "content": "My BGP session is flapping."}]
         synthetic_items: list[Any] = [{"role": "user", "content": _synthetic_prompt()}]
 
-        hooks_h = _hooks(_make_registry())
-        hooks_s = _hooks(_make_registry())
+        hooks_h = make_hooks(_make_registry())
+        hooks_s = make_hooks(_make_registry())
 
         ctx = None  # type: ignore[arg-type]
         agent = None  # type: ignore[arg-type]
@@ -151,24 +105,24 @@ class TestAlwaysOnSkillInjectsForSyntheticPrompt:
         await hooks_s.on_start(ctx, agent)
         await hooks_s.on_llm_start(ctx, agent, None, synthetic_items)
 
-        assert "POLICY CONTENT" in _contents(human_items)
-        assert "POLICY CONTENT" in _contents(synthetic_items)
+        assert "POLICY CONTENT" in extract_contents(human_items)
+        assert "POLICY CONTENT" in extract_contents(synthetic_items)
 
     @pytest.mark.asyncio
     async def test_multiple_always_on_skills_all_inject_for_synthetic_prompt(self) -> None:
         """All always-on skills inject, not just the first one registered."""
         registry = SkillRegistry()
-        registry.register(_SimpleSkill("policy-a", content="POLICY A", always_on=True))
-        registry.register(_SimpleSkill("policy-b", content="POLICY B", always_on=True))
+        registry.register(SimpleSkill("policy-a", content="POLICY A", always_on=True))
+        registry.register(SimpleSkill("policy-b", content="POLICY B", always_on=True))
 
-        hooks = _hooks(registry)
+        hooks = make_hooks(registry)
         ctx = None  # type: ignore[arg-type]
         agent = None  # type: ignore[arg-type]
 
         items: list[Any] = [{"role": "user", "content": _synthetic_prompt()}]
         await hooks.on_llm_start(ctx, agent, None, items)
 
-        contents = _contents(items)
+        contents = extract_contents(items)
         assert "POLICY A" in contents
         assert "POLICY B" in contents
 
@@ -185,11 +139,11 @@ class TestRouterReceivesSyntheticPrompt:
     async def test_router_receives_full_synthetic_text_as_routing_context(self) -> None:
         """The router is called with the complete synthetic prompt string, including
         all structured fields — it is not summarised or transformed."""
-        router = _RecordingRouter(names=[])
+        router = MockRouter(names=[])
         registry = SkillRegistry(router=router)
-        registry.register(_SimpleSkill("bgp-troubleshooting"))
+        registry.register(SimpleSkill("bgp-troubleshooting"))
 
-        hooks = _hooks(registry)
+        hooks = make_hooks(registry)
         ctx = None  # type: ignore[arg-type]
         agent = None  # type: ignore[arg-type]
 
@@ -206,11 +160,11 @@ class TestRouterReceivesSyntheticPrompt:
     async def test_router_selected_skill_injects_for_synthetic_prompt(self) -> None:
         """A skill selected by the router for a synthetic prompt is injected into
         input_items just as it would be for a conversational user message."""
-        router = _RecordingRouter(names=["bgp-troubleshooting"])
+        router = MockRouter(names=["bgp-troubleshooting"])
         registry = SkillRegistry(router=router)
-        registry.register(_SimpleSkill("bgp-troubleshooting", content="BGP CHECKLIST"))
+        registry.register(SimpleSkill("bgp-troubleshooting", content="BGP CHECKLIST"))
 
-        hooks = _hooks(registry)
+        hooks = make_hooks(registry)
         ctx = None  # type: ignore[arg-type]
         agent = None  # type: ignore[arg-type]
 
@@ -218,7 +172,7 @@ class TestRouterReceivesSyntheticPrompt:
         items: list[Any] = [{"role": "user", "content": prompt}]
         await hooks.on_llm_start(ctx, agent, None, items)
 
-        assert "BGP CHECKLIST" in _contents(items)
+        assert "BGP CHECKLIST" in extract_contents(items)
 
     @pytest.mark.asyncio
     async def test_router_not_called_when_synthetic_prompt_has_no_routable_skills(
@@ -226,12 +180,12 @@ class TestRouterReceivesSyntheticPrompt:
     ) -> None:
         """When the registry has no routable skills, the router is never called —
         this holds for synthetic prompts just as for human messages."""
-        router = _RecordingRouter(names=[])
+        router = MockRouter(names=[])
         registry = SkillRegistry(router=router)
         # Register only an always-on skill — nothing routable
-        registry.register(_SimpleSkill("policy", content="POLICY", always_on=True))
+        registry.register(SimpleSkill("policy", content="POLICY", always_on=True))
 
-        hooks = _hooks(registry)
+        hooks = make_hooks(registry)
         ctx = None  # type: ignore[arg-type]
         agent = None  # type: ignore[arg-type]
 
@@ -244,11 +198,11 @@ class TestRouterReceivesSyntheticPrompt:
     async def test_two_different_synthetic_prompts_each_trigger_router_call(self) -> None:
         """Different synthetic prompts (e.g. two separate proactive events) each
         produce a distinct router call — the LRU cache does not conflate them."""
-        router = _RecordingRouter(names=[])
+        router = MockRouter(names=[])
         registry = SkillRegistry(router=router)
-        registry.register(_SimpleSkill("some-skill"))
+        registry.register(SimpleSkill("some-skill"))
 
-        hooks = _hooks(registry)
+        hooks = make_hooks(registry)
         ctx = None  # type: ignore[arg-type]
         agent = None  # type: ignore[arg-type]
 
@@ -258,7 +212,7 @@ class TestRouterReceivesSyntheticPrompt:
         items_a: list[Any] = [{"role": "user", "content": prompt_a}]
         await hooks.on_llm_start(ctx, agent, None, items_a)
 
-        await hooks.on_llm_end(ctx, agent, _mock_response())  # type: ignore[arg-type]
+        await hooks.on_llm_end(ctx, agent, make_mock_response())  # type: ignore[arg-type]
 
         items_b: list[Any] = [{"role": "user", "content": prompt_b}]
         await hooks.on_llm_start(ctx, agent, None, items_b)
@@ -284,10 +238,10 @@ class TestSkillReinjectionAfterToolCallInProactiveSession:
         just as they do in an interactive session — on_llm_end clears the guard."""
         registry = SkillRegistry()
         registry.register(
-            _SimpleSkill("escalation-policy", content="ESCALATION POLICY", always_on=True)
+            SimpleSkill("escalation-policy", content="ESCALATION POLICY", always_on=True)
         )
 
-        hooks = _hooks(registry)
+        hooks = make_hooks(registry)
         ctx = None  # type: ignore[arg-type]
         agent = None  # type: ignore[arg-type]
 
@@ -301,7 +255,7 @@ class TestSkillReinjectionAfterToolCallInProactiveSession:
         assert first_call_count == 1
 
         # Tool executes; on_llm_end clears the guard
-        await hooks.on_llm_end(ctx, agent, _mock_response())  # type: ignore[arg-type]
+        await hooks.on_llm_end(ctx, agent, make_mock_response())  # type: ignore[arg-type]
         items.append({"role": "tool", "content": "tool output"})
 
         # Post-tool LLM call — skill must re-inject
@@ -320,24 +274,24 @@ class TestSkillReinjectionAfterToolCallInProactiveSession:
         sessions where no human sent the initial message."""
         registry = SkillRegistry()
         registry.register(
-            _SimpleSkill(
+            SimpleSkill(
                 "log-parser",
                 content="LOG PARSER GUIDANCE",
                 triggers_after_tools=["run_show_command"],
             )
         )
 
-        hooks = _hooks(registry)
+        hooks = make_hooks(registry)
         ctx = None  # type: ignore[arg-type]
         agent = None  # type: ignore[arg-type]
 
         items: list[Any] = [{"role": "user", "content": _synthetic_prompt()}]
 
         await hooks.on_llm_start(ctx, agent, None, items)
-        await hooks.on_llm_end(ctx, agent, _mock_response())  # type: ignore[arg-type]
+        await hooks.on_llm_end(ctx, agent, make_mock_response())  # type: ignore[arg-type]
 
         # on_tool_end queues the triggered skill
-        await hooks.on_tool_end(ctx, agent, _mock_tool("run_show_command"), "show output")  # type: ignore[arg-type]
+        await hooks.on_tool_end(ctx, agent, make_mock_tool("run_show_command"), "show output")  # type: ignore[arg-type]
 
         state = _get_run_state()
         assert any(s.name == "log-parser" for s in state.pending_skills)
@@ -346,7 +300,7 @@ class TestSkillReinjectionAfterToolCallInProactiveSession:
         items.append({"role": "tool", "content": "show output"})
         await hooks.on_llm_start(ctx, agent, None, items)
 
-        assert "LOG PARSER GUIDANCE" in _contents(items)
+        assert "LOG PARSER GUIDANCE" in extract_contents(items)
 
     @pytest.mark.asyncio
     async def test_without_on_llm_end_skill_does_not_reinject_in_proactive_session(
@@ -355,9 +309,9 @@ class TestSkillReinjectionAfterToolCallInProactiveSession:
         """If on_llm_end is not called between LLM invocations, the per-call guard
         is not cleared and the skill does not re-inject — same as interactive sessions."""
         registry = SkillRegistry()
-        registry.register(_SimpleSkill("policy", content="POLICY", always_on=True))
+        registry.register(SimpleSkill("policy", content="POLICY", always_on=True))
 
-        hooks = _hooks(registry)
+        hooks = make_hooks(registry)
         ctx = None  # type: ignore[arg-type]
         agent = None  # type: ignore[arg-type]
 
