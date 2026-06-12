@@ -543,7 +543,7 @@ class SkillHooks(AgentHooks, _SkillInjectionMixin):
         context: RunContextWrapper[Any],
         agent: Agent[Any],
         tool: Any,
-        result: str,
+        result: object,
     ) -> None:
         """Queue skills triggered by the completion of *tool*.
 
@@ -555,7 +555,7 @@ class SkillHooks(AgentHooks, _SkillInjectionMixin):
             context: The run context wrapper provided by the SDK.
             agent: The agent currently executing.
             tool: The tool that finished.  Its ``.name`` attribute identifies it.
-            result: The string result returned by the tool (not used directly).
+            result: The result returned by the tool (not used directly).
         """
         self._do_tool_end(tool.name, context, agent)
 
@@ -650,7 +650,7 @@ class RunSkillHooks(RunHooks, _SkillInjectionMixin):
         context: RunContextWrapper[Any],
         agent: Agent[Any],
         tool: Any,
-        result: str,
+        result: object,
     ) -> None:
         """Queue skills triggered by the completion of *tool*.
 
@@ -663,7 +663,7 @@ class RunSkillHooks(RunHooks, _SkillInjectionMixin):
             context: The run context wrapper provided by the SDK.
             agent: The agent currently executing.
             tool: The tool that finished.  Its ``.name`` attribute identifies it.
-            result: The string result returned by the tool (not used directly).
+            result: The result returned by the tool (not used directly).
         """
         self._do_tool_end(tool.name, context, agent)
 
