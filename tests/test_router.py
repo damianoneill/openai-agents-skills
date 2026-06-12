@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from agents.model_settings import ModelSettings
 
 from openai_agents_skills import BaseSkillRouter, LLMSkillRouter, Skill, SkillRouter
 from openai_agents_skills.router import _extract_json
@@ -646,16 +647,20 @@ class TestLLMSkillRouterModelSettings:
         await router.select("test message", [_RoutableSkill()])
 
         call_kwargs = mock_get_response.call_args.kwargs
-        settings_used = call_kwargs["model_settings"]
-        # Must not be None — must be a ModelSettings instance.
-        assert settings_used is not None
+        assert isinstance(call_kwargs["model_settings"], ModelSettings)
 
-        from agents.model_settings import ModelSettings
+    async def test_explicit_none_model_settings_produces_fresh_model_settings(self) -> None:
+        """Passing model_settings=None explicitly behaves the same as omitting it."""
+        mock_model, mock_get_response = _make_mock_model('{"selected": ["skill_a"]}')
 
-        assert isinstance(settings_used, ModelSettings)
+        router = LLMSkillRouter(model=mock_model, model_settings=None)
+        await router.select("test message", [_RoutableSkill()])
 
-    async def test_model_settings_not_shared_across_calls(self) -> None:
-        """Each call uses the same settings object — no accidental copies or mutations."""
+        call_kwargs = mock_get_response.call_args.kwargs
+        assert isinstance(call_kwargs["model_settings"], ModelSettings)
+
+    async def test_same_settings_object_reused_across_calls(self) -> None:
+        """The provided settings object is reused on every call — no accidental copies."""
         mock_model, mock_get_response = _make_mock_model('{"selected": []}')
         sentinel_settings = MagicMock()
 

@@ -6,9 +6,12 @@ import json
 import logging
 import re
 from collections import OrderedDict
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from .skills import Skill
+
+if TYPE_CHECKING:
+    from agents.model_settings import ModelSettings
 
 _log = logging.getLogger(__name__)
 
@@ -251,7 +254,7 @@ class LLMSkillRouter(BaseSkillRouter):
     def __init__(
         self,
         model: Any,
-        model_settings: Any | None = None,
+        model_settings: ModelSettings | None = None,
         cache_size: int = 256,
     ) -> None:
         super().__init__(cache_size=cache_size)
