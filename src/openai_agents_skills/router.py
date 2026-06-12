@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from collections import OrderedDict
+from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from .skills import Skill
@@ -14,6 +15,60 @@ if TYPE_CHECKING:
     from agents.model_settings import ModelSettings
 
 _log = logging.getLogger(__name__)
+
+# Name of the tracing span emitted for each routing decision.
+_ROUTING_SPAN_NAME = "skill_routing"
+
+
+def _routing_span() -> AbstractContextManager[Any]:
+    """Return a tracing-span context manager for a single routing decision.
+
+    Uses the openai-agents SDK ``custom_span`` so routing decisions appear in the
+    host application's trace, alongside the agent/chat spans of the run that
+    triggered routing.  Routing is otherwise invisible: the internal model call
+    in :class:`LLMSkillRouter` runs with tracing disabled, and cache hits make no
+    model call at all, so without this span a silent router failure is
+    indistinguishable from "correctly selected nothing".
+
+    When no trace is active — as in unit tests, or when the host has not
+    configured SDK tracing — a null context is returned instead. This avoids the
+    SDK's "No active trace" error log and adds zero overhead, so routing only
+    emits spans when the caller has already opted into tracing.
+    """
+    from agents.tracing import custom_span, get_current_trace
+
+    if get_current_trace() is None:
+        return nullcontext(None)
+    return custom_span(_ROUTING_SPAN_NAME)
+
+
+def _record_routing(
+    span: Any | None,
+    *,
+    candidates: list[str],
+    selected: list[str],
+    cache_hit: bool,
+    error: Exception | None = None,
+) -> None:
+    """Attach routing-decision attributes to *span*.
+
+    No-op when *span* is ``None`` (no active trace). Records the candidate skills
+    considered, those selected and rejected, whether the result came from the LRU
+    cache, and — on failure — the error so silent fallbacks remain queryable.
+    """
+    if span is None:
+        return
+    data = span.span_data.data
+    data["candidates"] = candidates
+    data["candidate_count"] = len(candidates)
+    data["selected"] = selected
+    data["selected_count"] = len(selected)
+    data["rejected"] = [name for name in candidates if name not in selected]
+    data["cache_hit"] = cache_hit
+    if error is not None:
+        data["error"] = str(error)
+        data["error_type"] = type(error).__name__
+
 
 _ROUTER_PROMPT_TEMPLATE = (
     "You are a skill router. Given a user message, select which skills (if any) apply.\n"
@@ -146,6 +201,10 @@ class BaseSkillRouter:
         shape) logs a WARNING and returns ``[]`` so the run continues with
         unconditional skills only.
 
+        When an SDK trace is active, the decision (candidates, selected,
+        rejected, cache-hit, and any error) is recorded on a ``skill_routing``
+        custom span so routing is observable in the host application's trace.
+
         Args:
             message: The routing context string.
             skills: Candidate skill instances.
@@ -153,38 +212,52 @@ class BaseSkillRouter:
         Returns:
             List of skill names the model selected, or ``[]`` on any error.
         """
-        if message in self._cache:
-            self._cache.move_to_end(message)
-            return list(self._cache[message])
+        with _routing_span() as span:
+            # Cache hit — the fast path. Keep it a single dict lookup; only build
+            # the candidate list when a span is active to record it on.
+            if message in self._cache:
+                self._cache.move_to_end(message)
+                cached = list(self._cache[message])
+                if span is not None:
+                    candidates = [s.name for s in skills if not s.always_on]
+                    _record_routing(span, candidates=candidates, selected=cached, cache_hit=True)
+                return cached
 
-        routable = [s for s in skills if not s.always_on]
-        if not routable:
-            return []
+            routable = [s for s in skills if not s.always_on]
+            candidates = [s.name for s in routable]
 
-        manifest = "\n".join(f"- {s.name}: {s.description}" for s in routable)
-        prompt = _ROUTER_PROMPT_TEMPLATE.format(message=message, manifest=manifest)
+            if not routable:
+                _record_routing(span, candidates=candidates, selected=[], cache_hit=False)
+                return []
 
-        try:
-            raw = await self._call_model(prompt)
-            data: Any = json.loads(_extract_json(raw))
-            if not isinstance(data, dict):
-                raise ValueError(f"Expected JSON object, got {type(data).__name__}")
-            names = data.get("selected", [])
-            if not isinstance(names, list):
-                names = []
-            result: list[str] = [n for n in names if isinstance(n, str)]
-        except Exception as exc:
-            _log.warning(
-                "SkillRouter.select failed; returning []. Error: %s",
-                exc,
-            )
-            return []
+            manifest = "\n".join(f"- {s.name}: {s.description}" for s in routable)
+            prompt = _ROUTER_PROMPT_TEMPLATE.format(message=message, manifest=manifest)
 
-        if self._cache_size > 0:
-            if len(self._cache) >= self._cache_size:
-                self._cache.popitem(last=False)
-            self._cache[message] = result
-        return list(result)
+            try:
+                raw = await self._call_model(prompt)
+                data: Any = json.loads(_extract_json(raw))
+                if not isinstance(data, dict):
+                    raise ValueError(f"Expected JSON object, got {type(data).__name__}")
+                names = data.get("selected", [])
+                if not isinstance(names, list):
+                    names = []
+                result: list[str] = [n for n in names if isinstance(n, str)]
+            except Exception as exc:
+                _log.warning(
+                    "SkillRouter.select failed; returning []. Error: %s",
+                    exc,
+                )
+                _record_routing(
+                    span, candidates=candidates, selected=[], cache_hit=False, error=exc
+                )
+                return []
+
+            if self._cache_size > 0:
+                if len(self._cache) >= self._cache_size:
+                    self._cache.popitem(last=False)
+                self._cache[message] = result
+            _record_routing(span, candidates=candidates, selected=list(result), cache_hit=False)
+            return list(result)
 
     async def _call_model(self, prompt: str) -> str:
         """Call the backing model with *prompt* and return the raw text response.

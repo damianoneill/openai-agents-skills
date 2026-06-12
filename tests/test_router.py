@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from agents.model_settings import ModelSettings
+from agents.tracing import Span, Trace, TracingProcessor, set_trace_processors, trace
 
 from openai_agents_skills import BaseSkillRouter, LLMSkillRouter, Skill, SkillRouter
 from openai_agents_skills.router import _extract_json
@@ -693,3 +694,118 @@ class TestLLMSkillRouterModelSettings:
 
         for call in mock_get_response.call_args_list:
             assert call.kwargs["model_settings"] is sentinel_settings
+
+
+# ---------------------------------------------------------------------------
+# select — routing observability (tracing span)
+# ---------------------------------------------------------------------------
+
+
+class _SpanCollector(TracingProcessor):
+    """Trace processor that records every span ended during a test."""
+
+    def __init__(self) -> None:
+        self.spans: list[Span[Any]] = []
+
+    def on_trace_start(self, trace: Trace) -> None:  # noqa: D102
+        pass
+
+    def on_trace_end(self, trace: Trace) -> None:  # noqa: D102
+        pass
+
+    def on_span_start(self, span: Span[Any]) -> None:  # noqa: D102
+        pass
+
+    def on_span_end(self, span: Span[Any]) -> None:  # noqa: D102
+        self.spans.append(span)
+
+    def force_flush(self) -> None:  # noqa: D102
+        pass
+
+    def shutdown(self) -> None:  # noqa: D102
+        pass
+
+    def routing_spans(self) -> list[Span[Any]]:
+        """Return only the ``skill_routing`` custom spans collected."""
+        return [s for s in self.spans if getattr(s.span_data, "name", None) == "skill_routing"]
+
+
+@pytest.fixture
+def span_collector() -> Any:
+    """Install a span-collecting trace processor for the duration of a test."""
+    collector = _SpanCollector()
+    set_trace_processors([collector])
+    try:
+        yield collector
+    finally:
+        set_trace_processors([])
+
+
+class TestLLMSkillRouterTracing:
+    async def test_select_emits_skill_routing_span_with_selected_and_rejected(
+        self, span_collector: _SpanCollector
+    ) -> None:
+        mock_model, _ = _make_mock_model('{"selected": ["skill_a"]}')
+        router = LLMSkillRouter(model=mock_model)
+
+        with trace("test-workflow"):
+            result = await router.select(
+                "test message", [_RoutableSkill(), _AnotherRoutableSkill()]
+            )
+
+        assert result == ["skill_a"]
+        routing = span_collector.routing_spans()
+        assert len(routing) == 1
+        data = routing[0].span_data.data
+        assert data["selected"] == ["skill_a"]
+        assert data["rejected"] == ["skill_b"]
+        assert data["candidates"] == ["skill_a", "skill_b"]
+        assert data["candidate_count"] == 2
+        assert data["selected_count"] == 1
+        assert data["cache_hit"] is False
+        assert "error" not in data
+
+    async def test_cache_hit_records_cache_hit_true(self, span_collector: _SpanCollector) -> None:
+        mock_model, _ = _make_mock_model('{"selected": ["skill_a"]}')
+        router = LLMSkillRouter(model=mock_model)
+        skills = [_RoutableSkill()]
+
+        with trace("test-workflow"):
+            await router.select("same message", skills)  # miss → populates cache
+            await router.select("same message", skills)  # hit
+
+        routing = span_collector.routing_spans()
+        assert len(routing) == 2
+        assert routing[0].span_data.data["cache_hit"] is False
+        assert routing[1].span_data.data["cache_hit"] is True
+        assert routing[1].span_data.data["selected"] == ["skill_a"]
+
+    async def test_error_path_records_error_on_span(self, span_collector: _SpanCollector) -> None:
+        mock_model, _ = _make_error_model(RuntimeError("network error"))
+        router = LLMSkillRouter(model=mock_model)
+
+        with trace("test-workflow"):
+            result = await router.select("test message", [_RoutableSkill()])
+
+        assert result == []
+        routing = span_collector.routing_spans()
+        assert len(routing) == 1
+        data = routing[0].span_data.data
+        assert data["selected"] == []
+        assert data["cache_hit"] is False
+        assert data["error"] == "network error"
+        assert data["error_type"] == "RuntimeError"
+
+    async def test_no_active_trace_emits_no_span_and_no_error_log(
+        self, span_collector: _SpanCollector, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Without a trace, routing must not create a span nor log a 'No active trace' error."""
+        mock_model, _ = _make_mock_model('{"selected": ["skill_a"]}')
+        router = LLMSkillRouter(model=mock_model)
+
+        with caplog.at_level(logging.ERROR):
+            result = await router.select("test message", [_RoutableSkill()])
+
+        assert result == ["skill_a"]
+        assert span_collector.routing_spans() == []
+        assert not any("No active trace" in r.getMessage() for r in caplog.records)

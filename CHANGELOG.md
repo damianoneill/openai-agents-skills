@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Feat
+
+- **routing observability** — `BaseSkillRouter.select` now emits a
+  `skill_routing` custom span (via the openai-agents SDK tracing API) recording
+  the candidate skills, those selected and rejected, whether the result was an
+  LRU cache hit, and any error. This makes routing decisions visible in the host
+  application's trace — previously the routing model call ran with tracing
+  disabled and silent fallbacks (`select` returning `[]` on error) were
+  indistinguishable from correctly selecting nothing. The span is only emitted
+  when a trace is already active, so there is no overhead or log noise when the
+  host has not enabled SDK tracing.
+
 ## v0.2.0 (2026-06-12)
 
 ### Feat
