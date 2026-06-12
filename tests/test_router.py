@@ -325,6 +325,31 @@ class TestLLMSkillRouterCaching:
 
         assert mock_get_response.call_count == 2
 
+    async def test_same_message_different_candidate_set_routes_afresh(self) -> None:
+        """A cache hit requires the same candidate set, not just the same message.
+
+        Skill.is_enabled gates routable skills per agent/context upstream, so the
+        same routing context can reach the router with different candidates. The
+        cache must not return one candidate set's selection for another's.
+        """
+        mock_model, mock_get_response = _make_mock_model('{"selected": ["skill_a"]}')
+        router = LLMSkillRouter(model=mock_model)
+
+        await router.select("same message", [_RoutableSkill()])
+        await router.select("same message", [_RoutableSkill(), _AnotherRoutableSkill()])
+
+        assert mock_get_response.call_count == 2
+
+    async def test_same_message_same_candidate_set_regardless_of_order(self) -> None:
+        """Candidate order must not change the cache key; the set identity is what matters."""
+        mock_model, mock_get_response = _make_mock_model('{"selected": ["skill_a"]}')
+        router = LLMSkillRouter(model=mock_model)
+
+        await router.select("same message", [_RoutableSkill(), _AnotherRoutableSkill()])
+        await router.select("same message", [_AnotherRoutableSkill(), _RoutableSkill()])
+
+        assert mock_get_response.call_count == 1
+
     async def test_cache_eviction_removes_oldest_entry(self) -> None:
         """With cache_size=2, the third distinct message evicts the first."""
         mock_model, mock_get_response = _make_mock_model('{"selected": ["skill_a"]}')

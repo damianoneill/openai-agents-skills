@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when a trace is already active, so there is no overhead or log noise when the
   host has not enabled SDK tracing.
 
+### Fix
+
+- **router cache key** — the `BaseSkillRouter` LRU cache is now keyed on the
+  message and its candidate skill set, not the message alone. `Skill.is_enabled`
+  gates routable skills per agent/context upstream of the router, so the same
+  routing context can reach the router with different candidates. Keying on the
+  message alone returned one candidate set's selection for another's, silently
+  skipping the router for the second set so its skills were never selected (a
+  missed injection). Candidate order does not affect the key.
+
 ## v0.2.0 (2026-06-12)
 
 ### Feat
@@ -48,10 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `ARGUMENTS: <value>`. `argument-hint` is retained as a display-only extension field.
 
 - **`BaseSkillRouter`** — public base class that exposes the shared routing
-  pipeline (prompt building, `_extract_json`, LRU cache).  Subclass it and implement
+  pipeline (prompt building, `_extract_json`, LRU cache). Subclass it and implement
   only `_call_model(prompt: str) -> str` to integrate any model provider without
-  re-implementing the boilerplate.  `LLMSkillRouter` is a thin subclass of
-  `BaseSkillRouter`.  `BaseSkillRouter` is exported from the package top-level.
+  re-implementing the boilerplate. `LLMSkillRouter` is a thin subclass of
+  `BaseSkillRouter`. `BaseSkillRouter` is exported from the package top-level.
 
 - **Phase 1 — Core injection:** `Skill` abstract base class, `SkillHooks`
   (`AgentHooks` subclass) that prepends skill prompt blocks to `input_items` before
@@ -94,12 +104,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fix
 
 - **`LLMSkillRouter`: no `response_format` default** — `response_format={"type":
-  "json_object"}` is not sent by default because it is unsupported by several
-  providers (AWS Bedrock via LiteLLM, some Azure configurations, Ollama).  Use the
+"json_object"}` is not sent by default because it is unsupported by several
+  providers (AWS Bedrock via LiteLLM, some Azure configurations, Ollama). Use the
   `use_response_format=True` constructor flag to opt in explicitly if you need it.
 
 - **`LLMSkillRouter`: robust JSON extraction** — the router does not raise on
   prose-wrapped responses or extended-thinking content-block lists (e.g. Claude
-  `claude-haiku-4-5` / `claude-sonnet-4-5`).  A `_extract_json` helper handles
+  `claude-haiku-4-5` / `claude-sonnet-4-5`). A `_extract_json` helper handles
   all observed response shapes: plain JSON, JSON embedded in prose, `None` / empty,
   and `list[dict]` content blocks.

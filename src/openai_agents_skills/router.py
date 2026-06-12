@@ -189,7 +189,7 @@ class BaseSkillRouter:
 
     def __init__(self, cache_size: int = 256) -> None:
         self._cache_size = cache_size
-        self._cache: OrderedDict[str, list[str]] = OrderedDict()
+        self._cache: OrderedDict[tuple[str, frozenset[str]], list[str]] = OrderedDict()
 
     async def select(self, message: str, skills: list[Skill]) -> list[str]:
         """Select skills relevant to *message*.
@@ -212,19 +212,24 @@ class BaseSkillRouter:
         Returns:
             List of skill names the model selected, or ``[]`` on any error.
         """
-        with _routing_span() as span:
-            # Cache hit — the fast path. Keep it a single dict lookup; only build
-            # the candidate list when a span is active to record it on.
-            if message in self._cache:
-                self._cache.move_to_end(message)
-                cached = list(self._cache[message])
-                if span is not None:
-                    candidates = [s.name for s in skills if not s.always_on]
-                    _record_routing(span, candidates=candidates, selected=cached, cache_hit=True)
-                return cached
+        routable = [s for s in skills if not s.always_on]
+        # Built unconditionally (not lazily behind a span check): the names are
+        # load-bearing for the cache key below, not just telemetry.
+        candidates = [s.name for s in routable]
+        # Key the cache on the candidate set as well as the message, not the
+        # message alone. The same routing context can be routed for agents whose
+        # routable skills differ (``Skill.is_enabled`` gates per agent/context
+        # upstream of the router). Keying on message alone would return one
+        # agent's selection for another's distinct candidate set, silently
+        # skipping the router for the second and never selecting its skills.
+        cache_key = (message, frozenset(candidates))
 
-            routable = [s for s in skills if not s.always_on]
-            candidates = [s.name for s in routable]
+        with _routing_span() as span:
+            if cache_key in self._cache:
+                self._cache.move_to_end(cache_key)
+                cached = list(self._cache[cache_key])
+                _record_routing(span, candidates=candidates, selected=cached, cache_hit=True)
+                return cached
 
             if not routable:
                 _record_routing(span, candidates=candidates, selected=[], cache_hit=False)
@@ -255,7 +260,7 @@ class BaseSkillRouter:
             if self._cache_size > 0:
                 if len(self._cache) >= self._cache_size:
                     self._cache.popitem(last=False)
-                self._cache[message] = result
+                self._cache[cache_key] = result
             _record_routing(span, candidates=candidates, selected=list(result), cache_hit=False)
             return list(result)
 
@@ -288,8 +293,10 @@ class LLMSkillRouter(BaseSkillRouter):
     The default routing implementation.  Sends the user message and a skill
     manifest to the configured model via the SDK's ``Model.get_response()``
     interface and parses the ``{"selected": [...]}`` JSON response.  Results
-    are cached per message string using an in-process LRU cache, so repeated
-    routing of identical messages within a session avoids redundant LLM calls.
+    are cached using an in-process LRU cache keyed on the message and its
+    candidate skill set, so repeated routing of an identical message against the
+    same candidates avoids redundant LLM calls while a differing candidate set
+    (e.g. another agent's routable skills) still routes afresh.
 
     Since ``openai-agents`` is a required dependency, pass the same ``Model``
     instance you use for your ``Agent`` -- no separate client configuration is
