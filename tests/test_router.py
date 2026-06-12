@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from agents.model_settings import ModelSettings
 
 from openai_agents_skills import BaseSkillRouter, LLMSkillRouter, Skill, SkillRouter
 from openai_agents_skills.router import _extract_json
@@ -619,3 +620,54 @@ class TestBaseSkillRouter:
         await router.select("same message", skills)
 
         assert call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# LLMSkillRouter — model_settings parameter
+# ---------------------------------------------------------------------------
+
+
+class TestLLMSkillRouterModelSettings:
+    async def test_custom_model_settings_passed_to_get_response(self) -> None:
+        """When model_settings is provided, it must be forwarded to model.get_response()."""
+        mock_model, mock_get_response = _make_mock_model('{"selected": ["skill_a"]}')
+        sentinel_settings = MagicMock()
+
+        router = LLMSkillRouter(model=mock_model, model_settings=sentinel_settings)
+        await router.select("test message", [_RoutableSkill()])
+
+        call_kwargs = mock_get_response.call_args.kwargs
+        assert call_kwargs["model_settings"] is sentinel_settings
+
+    async def test_none_model_settings_uses_default_model_settings(self) -> None:
+        """When model_settings is None (default), an empty ModelSettings() is created."""
+        mock_model, mock_get_response = _make_mock_model('{"selected": ["skill_a"]}')
+
+        router = LLMSkillRouter(model=mock_model)  # model_settings defaults to None
+        await router.select("test message", [_RoutableSkill()])
+
+        call_kwargs = mock_get_response.call_args.kwargs
+        assert isinstance(call_kwargs["model_settings"], ModelSettings)
+
+    async def test_explicit_none_model_settings_produces_fresh_model_settings(self) -> None:
+        """Passing model_settings=None explicitly behaves the same as omitting it."""
+        mock_model, mock_get_response = _make_mock_model('{"selected": ["skill_a"]}')
+
+        router = LLMSkillRouter(model=mock_model, model_settings=None)
+        await router.select("test message", [_RoutableSkill()])
+
+        call_kwargs = mock_get_response.call_args.kwargs
+        assert isinstance(call_kwargs["model_settings"], ModelSettings)
+
+    async def test_same_settings_object_reused_across_calls(self) -> None:
+        """The provided settings object is reused on every call — no accidental copies."""
+        mock_model, mock_get_response = _make_mock_model('{"selected": []}')
+        sentinel_settings = MagicMock()
+
+        router = LLMSkillRouter(model=mock_model, model_settings=sentinel_settings)
+        # Two distinct messages to avoid cache hit.
+        await router.select("msg1", [_RoutableSkill()])
+        await router.select("msg2", [_RoutableSkill()])
+
+        for call in mock_get_response.call_args_list:
+            assert call.kwargs["model_settings"] is sentinel_settings
