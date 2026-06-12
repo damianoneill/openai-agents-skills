@@ -227,6 +227,11 @@ class LLMSkillRouter(BaseSkillRouter):
     Args:
         model: Any openai-agents SDK ``Model`` instance.  Pass the same model
             you give your ``Agent`` for zero extra configuration.
+        model_settings: Optional ``ModelSettings`` to use for routing calls.
+            When provided, these settings (including ``extra_args`` for AWS
+            credentials, ``extra_body`` for inference profiles, etc.) are passed
+            to every ``model.get_response()`` invocation.  When ``None``, an
+            empty ``ModelSettings()`` is used.
         cache_size: Maximum number of ``(message -> names)`` entries in the LRU
             cache.  Default: 256.
 
@@ -246,10 +251,12 @@ class LLMSkillRouter(BaseSkillRouter):
     def __init__(
         self,
         model: Any,
+        model_settings: Any | None = None,
         cache_size: int = 256,
     ) -> None:
         super().__init__(cache_size=cache_size)
         self._model = model
+        self._model_settings = model_settings
 
     async def _call_model(self, prompt: str) -> str:
         """Call the SDK Model and return the raw text response.
@@ -268,10 +275,11 @@ class LLMSkillRouter(BaseSkillRouter):
         from agents.model_settings import ModelSettings
         from agents.models.interface import ModelTracing
 
+        settings = self._model_settings if self._model_settings is not None else ModelSettings()
         response = await self._model.get_response(
             system_instructions=None,
             input=prompt,
-            model_settings=ModelSettings(),
+            model_settings=settings,
             tools=[],
             output_schema=None,
             handoffs=[],

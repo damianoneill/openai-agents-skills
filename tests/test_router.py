@@ -619,3 +619,50 @@ class TestBaseSkillRouter:
         await router.select("same message", skills)
 
         assert call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# LLMSkillRouter — model_settings parameter
+# ---------------------------------------------------------------------------
+
+
+class TestLLMSkillRouterModelSettings:
+    async def test_custom_model_settings_passed_to_get_response(self) -> None:
+        """When model_settings is provided, it must be forwarded to model.get_response()."""
+        mock_model, mock_get_response = _make_mock_model('{"selected": ["skill_a"]}')
+        sentinel_settings = MagicMock()
+
+        router = LLMSkillRouter(model=mock_model, model_settings=sentinel_settings)
+        await router.select("test message", [_RoutableSkill()])
+
+        call_kwargs = mock_get_response.call_args.kwargs
+        assert call_kwargs["model_settings"] is sentinel_settings
+
+    async def test_none_model_settings_uses_default_model_settings(self) -> None:
+        """When model_settings is None (default), an empty ModelSettings() is created."""
+        mock_model, mock_get_response = _make_mock_model('{"selected": ["skill_a"]}')
+
+        router = LLMSkillRouter(model=mock_model)  # model_settings defaults to None
+        await router.select("test message", [_RoutableSkill()])
+
+        call_kwargs = mock_get_response.call_args.kwargs
+        settings_used = call_kwargs["model_settings"]
+        # Must not be None — must be a ModelSettings instance.
+        assert settings_used is not None
+
+        from agents.model_settings import ModelSettings
+
+        assert isinstance(settings_used, ModelSettings)
+
+    async def test_model_settings_not_shared_across_calls(self) -> None:
+        """Each call uses the same settings object — no accidental copies or mutations."""
+        mock_model, mock_get_response = _make_mock_model('{"selected": []}')
+        sentinel_settings = MagicMock()
+
+        router = LLMSkillRouter(model=mock_model, model_settings=sentinel_settings)
+        # Two distinct messages to avoid cache hit.
+        await router.select("msg1", [_RoutableSkill()])
+        await router.select("msg2", [_RoutableSkill()])
+
+        for call in mock_get_response.call_args_list:
+            assert call.kwargs["model_settings"] is sentinel_settings
