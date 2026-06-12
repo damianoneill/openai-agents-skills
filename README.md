@@ -36,7 +36,7 @@ class CitationSkill(Skill):
     name = "citation"
     description = "Always cite sources when making factual claims."
 
-    async def get_prompt_blocks(self, args: str = "") -> list:
+    async def get_prompt_blocks(self, context, agent, args: str = "") -> list:
         return [{"role": "user", "content": "Always cite your sources when making factual claims."}]
 ```
 
@@ -143,7 +143,7 @@ class FeatureFlagSkill(Skill):
     def is_enabled(self, context=None, agent=None) -> bool:
         return os.getenv("ENABLE_SKILL") == "1"
 
-    async def get_prompt_blocks(self, args: str = "") -> list:
+    async def get_prompt_blocks(self, context, agent, args: str = "") -> list:
         return [{"role": "user", "content": "The feature flag skill is active."}]
 ```
 

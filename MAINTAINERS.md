@@ -15,6 +15,22 @@ This document provides guidelines for maintaining the `openai-agents-skills` pac
 
 This project uses [Commitizen](https://commitizen-tools.github.io/commitizen/) to automate versioning and changelog generation based on [Conventional Commits](https://www.conventionalcommits.org/).
 
+### First Release (0.1.0)
+
+The version files (`pyproject.toml`, `_version.py`) ship at `0.1.0` and there are no
+existing tags. **Do not run `make release`/`make bump` for the first release** — `cz bump`
+computes an increment from commit history and would produce `0.2.0`. Instead, tag the
+current commit directly:
+
+```bash
+make check            # confirm everything passes
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin main --tags
+```
+
+Then create the GitHub Release on the `v0.1.0` tag (see step 6 below). Once the tag
+exists, the commitizen-based flow below works correctly for all subsequent releases.
+
 ### Quick Release
 
 For a standard release (recommended):
@@ -130,7 +146,7 @@ The workflow uses `UV_PUBLISH_TOKEN` environment variable which `uv publish` rea
 **Triggers:** Push to `main`, Pull Requests to `main`
 
 **Jobs:**
-- Tests across Python 3.11 and 3.13
+- Tests across Python 3.11, 3.12, and 3.13
 - Pre-commit hooks (on Python 3.11 only)
 - Linting with ruff
 - Type checking with mypy (on Python 3.11 only)

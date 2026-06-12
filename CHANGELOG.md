@@ -5,49 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.1.1 (Unreleased)
+## v0.1.0 (2026-06-12)
 
 ### Feat
 
-- **agentskills.io standard alignment** — `SKILL.md` files now fully align with the
+- **agentskills.io standard alignment** — `SKILL.md` files align with the
   [agentskills.io](https://agentskills.io/) open specification:
   - `allowed-tools` accepts a space-separated string (`"Bash(git:*) Read"`) per spec, as well as a
     YAML list for backward compatibility.
-  - New standard frontmatter fields parsed and stored on `FileSkill`: `license`, `compatibility`
+  - Standard frontmatter fields parsed and stored on `FileSkill`: `license`, `compatibility`
     (max 500 chars), and `metadata` (arbitrary key-value map).
   - `name` validated per spec: lowercase letters, digits, and hyphens only; no leading/trailing
     hyphen; no consecutive hyphens (`--`); max 64 characters.
   - `description` max 1024 characters enforced.
-  - **Argument substitution aligned with Claude Code standard** — `substitute_args` now uses
+  - **Argument substitution aligned with Claude Code standard** — `substitute_args` uses
     `$ARGUMENTS` (full argument string) instead of named/positional `$arg_name` / `$N` patterns.
     If `$ARGUMENTS` is absent from the body and arguments are supplied, they are appended as
-    `ARGUMENTS: <value>`. The `arguments` frontmatter field is removed; use `$ARGUMENTS` in the
-    skill body instead. `argument-hint` is retained as a display-only extension field.
+    `ARGUMENTS: <value>`. `argument-hint` is retained as a display-only extension field.
 
-### Fix
-
-- **`LLMSkillRouter`: remove `response_format` default** — `response_format={"type":
-  "json_object"}` is no longer sent by default because it is unsupported by several
-  providers (AWS Bedrock via LiteLLM, some Azure configurations, Ollama).  Use the new
-  `use_response_format=True` constructor flag to opt in explicitly if you need it.
-
-- **`LLMSkillRouter`: robust JSON extraction** — the router no longer raises on
-  prose-wrapped responses or extended-thinking content-block lists (e.g. Claude
-  `claude-haiku-4-5` / `claude-sonnet-4-5`).  A new `_extract_json` helper handles
-  all observed response shapes: plain JSON, JSON embedded in prose, `None` / empty,
-  and `list[dict]` content blocks.
-
-### Feat
-
-- **`BaseSkillRouter`** — new public base class that exposes the shared routing
+- **`BaseSkillRouter`** — public base class that exposes the shared routing
   pipeline (prompt building, `_extract_json`, LRU cache).  Subclass it and implement
   only `_call_model(prompt: str) -> str` to integrate any model provider without
-  re-implementing the boilerplate.  `LLMSkillRouter` is now a thin subclass of
+  re-implementing the boilerplate.  `LLMSkillRouter` is a thin subclass of
   `BaseSkillRouter`.  `BaseSkillRouter` is exported from the package top-level.
-
-## v0.1.0 (2025-01-01)
-
-### Feat
 
 - **Phase 1 — Core injection:** `Skill` abstract base class, `SkillHooks`
   (`AgentHooks` subclass) that prepends skill prompt blocks to `input_items` before
@@ -86,3 +66,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validation; `allowed-tools` surfaced in manifest as informational guidance for
   the model; 96% test coverage across 324 tests; Google-style docstrings on all
   public API symbols.
+
+### Fix
+
+- **`LLMSkillRouter`: no `response_format` default** — `response_format={"type":
+  "json_object"}` is not sent by default because it is unsupported by several
+  providers (AWS Bedrock via LiteLLM, some Azure configurations, Ollama).  Use the
+  `use_response_format=True` constructor flag to opt in explicitly if you need it.
+
+- **`LLMSkillRouter`: robust JSON extraction** — the router does not raise on
+  prose-wrapped responses or extended-thinking content-block lists (e.g. Claude
+  `claude-haiku-4-5` / `claude-sonnet-4-5`).  A `_extract_json` helper handles
+  all observed response shapes: plain JSON, JSON embedded in prose, `None` / empty,
+  and `list[dict]` content blocks.
