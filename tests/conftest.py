@@ -34,11 +34,14 @@ class MockRouter:
 
     def __init__(self, names: list[str]) -> None:
         self._names = names
-        # Each entry is (message, [skill_name, ...]) so callers can inspect what was passed.
-        self.calls: list[tuple[str, list[str]]] = []
+        # Each entry is (message, [skill_name, ...], always_on) so callers can
+        # inspect what was passed, including the forwarded always-on names.
+        self.calls: list[tuple[str, list[str], list[str] | None]] = []
 
-    async def select(self, message: str, skills: list[Skill]) -> list[str]:
-        self.calls.append((message, [s.name for s in skills]))
+    async def select(
+        self, message: str, skills: list[Skill], always_on: list[str] | None = None
+    ) -> list[str]:
+        self.calls.append((message, [s.name for s in skills], always_on))
         return list(self._names)
 
 

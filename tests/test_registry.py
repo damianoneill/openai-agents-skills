@@ -390,6 +390,22 @@ class TestSelectForMessageWithRouter:
         assert "always_on" not in passed_names
         assert "routable" in passed_names
 
+    async def test_always_on_names_forwarded_to_router(self) -> None:
+        """Enabled always-on skill names are forwarded so they can be traced."""
+        router = MockRouter(names=[])
+        registry = SkillRegistry(router=router)
+        registry.register(_AlwaysOnSkill())  # always_on=True — injected, not routed
+        registry.register(_RoutableSkill())  # always_on=False — routed
+
+        await registry.select_for_message("test message")
+
+        assert len(router.calls) == 1
+        passed_names = router.calls[0][1]
+        forwarded_always_on = router.calls[0][2]
+        # Always-on names are forwarded separately, never mixed into the routable set.
+        assert forwarded_always_on == ["always_on"]
+        assert "always_on" not in passed_names
+
     async def test_mix_of_known_and_unknown_router_names(self) -> None:
         """Router may return a mix; only names found in the registry are included."""
         router = MockRouter(names=["routable", "ghost"])

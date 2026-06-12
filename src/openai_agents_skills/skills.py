@@ -110,6 +110,12 @@ class Skill(ABC):
         or any other condition. Disabled skills are silently skipped by
         :class:`~openai_agents_skills.hooks.SkillHooks`.
 
+        Keep overrides cheap and deterministic: this may be evaluated more than
+        once per turn (e.g. once when resolving injection and again when
+        recording always-on skills on the routing span). A context-dependent
+        implementation that returns different results across those calls can
+        report a skill set on the span that differs from what was injected.
+
         Args:
             context: The current run context, or ``None`` if not available.
             agent: The current agent, or ``None`` if not available.

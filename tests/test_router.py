@@ -834,3 +834,66 @@ class TestLLMSkillRouterTracing:
         assert result == ["skill_a"]
         assert span_collector.routing_spans() == []
         assert not any("No active trace" in r.getMessage() for r in caplog.records)
+
+    async def test_always_on_names_recorded_on_span(self, span_collector: _SpanCollector) -> None:
+        """Always-on skills injected unconditionally are recorded on the routing span.
+
+        They are excluded from the manifest/candidates but must still appear via
+        ``always_on`` so the trace reflects every skill active this turn.
+        """
+        mock_model, _ = _make_mock_model('{"selected": ["skill_a"]}')
+        router = LLMSkillRouter(model=mock_model)
+
+        with trace("test-workflow"):
+            result = await router.select(
+                "test message",
+                [_RoutableSkill(), _AnotherRoutableSkill()],
+                always_on=["non_routable"],
+            )
+
+        assert result == ["skill_a"]
+        data = span_collector.routing_spans()[0].span_data.data
+        # Always-on names are reported but never leak into the routed sets.
+        assert data["always_on"] == ["non_routable"]
+        assert data["always_on_count"] == 1
+        assert data["candidates"] == ["skill_a", "skill_b"]
+        assert "non_routable" not in data["selected"]
+        assert "non_routable" not in data["rejected"]
+
+    async def test_always_on_derived_from_skills_when_param_omitted(
+        self, span_collector: _SpanCollector
+    ) -> None:
+        """When ``always_on`` is not passed, names are derived from always-on skills in *skills*."""
+        mock_model, _ = _make_mock_model('{"selected": ["skill_a"]}')
+        router = LLMSkillRouter(model=mock_model)
+
+        with trace("test-workflow"):
+            await router.select("test message", [_RoutableSkill(), _NonRoutableSkill()])
+
+        data = span_collector.routing_spans()[0].span_data.data
+        assert data["always_on"] == ["non_routable"]
+        assert data["always_on_count"] == 1
+        assert data["candidates"] == ["skill_a"]
+
+    async def test_always_on_not_part_of_cache_key(self, span_collector: _SpanCollector) -> None:
+        """``always_on`` must not affect the cache key.
+
+        Same message and candidate set with differing ``always_on`` must hit the
+        cache (one model call), and the span must reflect the *current* call's
+        ``always_on`` rather than the cached one.
+        """
+        mock_model, mock_get_response = _make_mock_model('{"selected": ["skill_a"]}')
+        router = LLMSkillRouter(model=mock_model)
+        skills = [_RoutableSkill()]
+
+        with trace("test-workflow"):
+            await router.select("same message", skills, always_on=["first"])  # miss
+            await router.select("same message", skills, always_on=["second"])  # hit
+
+        # Differing always_on did not split the cache.
+        assert mock_get_response.call_count == 1
+        routing = span_collector.routing_spans()
+        assert routing[0].span_data.data["cache_hit"] is False
+        assert routing[0].span_data.data["always_on"] == ["first"]
+        assert routing[1].span_data.data["cache_hit"] is True
+        assert routing[1].span_data.data["always_on"] == ["second"]

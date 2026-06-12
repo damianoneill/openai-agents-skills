@@ -48,13 +48,16 @@ def _record_routing(
     candidates: list[str],
     selected: list[str],
     cache_hit: bool,
+    always_on: list[str] | None = None,
     error: Exception | None = None,
 ) -> None:
     """Attach routing-decision attributes to *span*.
 
     No-op when *span* is ``None`` (no active trace). Records the candidate skills
-    considered, those selected and rejected, whether the result came from the LRU
-    cache, and — on failure — the error so silent fallbacks remain queryable.
+    considered, those selected and rejected, the always-on skills injected
+    unconditionally (so the trace reflects every skill active this turn, not just
+    the routed ones), whether the result came from the LRU cache, and — on
+    failure — the error so silent fallbacks remain queryable.
     """
     if span is None:
         return
@@ -65,6 +68,9 @@ def _record_routing(
     data["selected_count"] = len(selected)
     data["rejected"] = [name for name in candidates if name not in selected]
     data["cache_hit"] = cache_hit
+    if always_on is not None:
+        data["always_on"] = always_on
+        data["always_on_count"] = len(always_on)
     if error is not None:
         data["error"] = str(error)
         data["error_type"] = type(error).__name__
@@ -139,6 +145,7 @@ class SkillRouter(Protocol):
         self,
         message: str,
         skills: list[Skill],
+        always_on: list[str] | None = None,
     ) -> list[str]:
         """Return names of skills to activate for this message.
 
@@ -146,6 +153,10 @@ class SkillRouter(Protocol):
             message: The routing context string (user message or multi-turn summary).
             skills: Candidate skills — typically only those with
                 ``always_on=False`` are passed.
+            always_on: Names of always-on skills injected this turn, forwarded
+                for observability only. The registry passes this keyword
+                unconditionally, so implementations **must accept** the
+                parameter; they may ignore its value.
 
         Returns:
             A list of skill names from *skills* that should be activated.
@@ -191,7 +202,9 @@ class BaseSkillRouter:
         self._cache_size = cache_size
         self._cache: OrderedDict[tuple[str, frozenset[str]], list[str]] = OrderedDict()
 
-    async def select(self, message: str, skills: list[Skill]) -> list[str]:
+    async def select(
+        self, message: str, skills: list[Skill], always_on: list[str] | None = None
+    ) -> list[str]:
         """Select skills relevant to *message*.
 
         Skills with ``always_on=True`` are excluded from the manifest —
@@ -202,17 +215,26 @@ class BaseSkillRouter:
         unconditional skills only.
 
         When an SDK trace is active, the decision (candidates, selected,
-        rejected, cache-hit, and any error) is recorded on a ``skill_routing``
-        custom span so routing is observable in the host application's trace.
+        rejected, always-on, cache-hit, and any error) is recorded on a
+        ``skill_routing`` custom span so routing is observable in the host
+        application's trace.
 
         Args:
             message: The routing context string.
-            skills: Candidate skill instances.
+            skills: Candidate skill instances (always-on skills are filtered
+                out of the manifest and cache key).
+            always_on: Names of always-on skills injected this turn, recorded on
+                the span for observability only. The registry passes this keyword
+                unconditionally; direct callers may omit it, in which case the
+                names are derived from any always-on skills present in *skills*.
 
         Returns:
             List of skill names the model selected, or ``[]`` on any error.
         """
         routable = [s for s in skills if not s.always_on]
+        always_on_names = (
+            always_on if always_on is not None else [s.name for s in skills if s.always_on]
+        )
         # Built unconditionally (not lazily behind a span check): the names are
         # load-bearing for the cache key below, not just telemetry.
         candidates = [s.name for s in routable]
@@ -228,11 +250,23 @@ class BaseSkillRouter:
             if cache_key in self._cache:
                 self._cache.move_to_end(cache_key)
                 cached = list(self._cache[cache_key])
-                _record_routing(span, candidates=candidates, selected=cached, cache_hit=True)
+                _record_routing(
+                    span,
+                    candidates=candidates,
+                    selected=cached,
+                    cache_hit=True,
+                    always_on=always_on_names,
+                )
                 return cached
 
             if not routable:
-                _record_routing(span, candidates=candidates, selected=[], cache_hit=False)
+                _record_routing(
+                    span,
+                    candidates=candidates,
+                    selected=[],
+                    cache_hit=False,
+                    always_on=always_on_names,
+                )
                 return []
 
             manifest = "\n".join(f"- {s.name}: {s.description}" for s in routable)
@@ -253,7 +287,12 @@ class BaseSkillRouter:
                     exc,
                 )
                 _record_routing(
-                    span, candidates=candidates, selected=[], cache_hit=False, error=exc
+                    span,
+                    candidates=candidates,
+                    selected=[],
+                    cache_hit=False,
+                    always_on=always_on_names,
+                    error=exc,
                 )
                 return []
 
@@ -261,7 +300,13 @@ class BaseSkillRouter:
                 if len(self._cache) >= self._cache_size:
                     self._cache.popitem(last=False)
                 self._cache[cache_key] = result
-            _record_routing(span, candidates=candidates, selected=list(result), cache_hit=False)
+            _record_routing(
+                span,
+                candidates=candidates,
+                selected=list(result),
+                cache_hit=False,
+                always_on=always_on_names,
+            )
             return list(result)
 
     async def _call_model(self, prompt: str) -> str:

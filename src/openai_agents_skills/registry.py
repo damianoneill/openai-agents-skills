@@ -135,7 +135,9 @@ class SkillRegistry:
     ) -> list[Skill]:
         """Return skills selected by the router for this message.
 
-        Only skills with ``always_on=False`` are passed to the router.
+        Only skills with ``always_on=False`` are routed; always-on skill names
+        are still forwarded to the router so they can be recorded on the routing
+        span for observability.
         Returns ``[]`` when no router is configured (all active skills then come
         from :meth:`get_always_on`).
 
@@ -152,12 +154,12 @@ class SkillRegistry:
         """
         if self._router is None:
             return []
-        routable = [
-            s for s in self._skills.values() if not s.always_on and s.is_enabled(context, agent)
-        ]
+        enabled = [s for s in self._skills.values() if s.is_enabled(context, agent)]
+        routable = [s for s in enabled if not s.always_on]
         if not routable:
             return []
-        names = await self._router.select(message, routable)
+        always_on_names = [s.name for s in enabled if s.always_on]
+        names = await self._router.select(message, routable, always_on=always_on_names)
         return [self._skills[n] for n in names if n in self._skills]
 
     def get_triggered_by_tool(
