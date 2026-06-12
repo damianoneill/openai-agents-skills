@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.0 (2026-06-12)
+
+### BREAKING CHANGE
+
+- SkillRouter.select gains an always_on keyword argument that the registry passes unconditionally. Direct implementers of the SkillRouter protocol must accept the parameter (they may ignore its value). Subclasses of BaseSkillRouter are unaffected.
+
+### Feat
+
+- record always-on skills on the routing span
+
 ## v0.3.0 (2026-06-12)
 
 ### Feat
