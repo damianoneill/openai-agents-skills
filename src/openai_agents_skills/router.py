@@ -233,8 +233,12 @@ class LLMSkillRouter(BaseSkillRouter):
         model_settings: Optional ``ModelSettings`` to use for routing calls.
             When provided, these settings (including ``extra_args`` for AWS
             credentials, ``extra_body`` for inference profiles, etc.) are passed
-            to every ``model.get_response()`` invocation.  When ``None``, an
-            empty ``ModelSettings()`` is used.
+            verbatim to every ``model.get_response()`` invocation — including
+            whatever ``temperature`` they specify.  When ``None`` (the default),
+            ``ModelSettings(temperature=0.0)`` is used so that routing is
+            deterministic: skill selection is a classification task, and a
+            temperature of ``0`` keeps results stable and consistent with the
+            per-message LRU cache.
         cache_size: Maximum number of ``(message -> names)`` entries in the LRU
             cache.  Default: 256.
 
@@ -266,7 +270,9 @@ class LLMSkillRouter(BaseSkillRouter):
 
         Invokes ``model.get_response()`` with the routing prompt and no tools,
         handoffs, or output schema.  Tracing is disabled to avoid polluting the
-        agent's trace with internal routing calls.
+        agent's trace with internal routing calls.  When no ``model_settings``
+        was supplied to the router, a deterministic ``temperature=0.0`` setting
+        is used.
 
         Args:
             prompt: The complete routing prompt.
@@ -278,7 +284,11 @@ class LLMSkillRouter(BaseSkillRouter):
         from agents.model_settings import ModelSettings
         from agents.models.interface import ModelTracing
 
-        settings = self._model_settings if self._model_settings is not None else ModelSettings()
+        settings = (
+            self._model_settings
+            if self._model_settings is not None
+            else ModelSettings(temperature=0.0)
+        )
         response = await self._model.get_response(
             system_instructions=None,
             input=prompt,

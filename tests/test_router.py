@@ -649,6 +649,28 @@ class TestLLMSkillRouterModelSettings:
         call_kwargs = mock_get_response.call_args.kwargs
         assert isinstance(call_kwargs["model_settings"], ModelSettings)
 
+    async def test_default_model_settings_use_temperature_zero(self) -> None:
+        """The default routing settings pin temperature to 0 for deterministic selection."""
+        mock_model, mock_get_response = _make_mock_model('{"selected": ["skill_a"]}')
+
+        router = LLMSkillRouter(model=mock_model)  # model_settings defaults to None
+        await router.select("test message", [_RoutableSkill()])
+
+        call_kwargs = mock_get_response.call_args.kwargs
+        assert call_kwargs["model_settings"].temperature == 0.0
+
+    async def test_custom_model_settings_temperature_not_overridden(self) -> None:
+        """Caller-supplied settings are passed verbatim; their temperature is preserved."""
+        mock_model, mock_get_response = _make_mock_model('{"selected": ["skill_a"]}')
+        custom_settings = ModelSettings(temperature=0.7)
+
+        router = LLMSkillRouter(model=mock_model, model_settings=custom_settings)
+        await router.select("test message", [_RoutableSkill()])
+
+        call_kwargs = mock_get_response.call_args.kwargs
+        assert call_kwargs["model_settings"] is custom_settings
+        assert call_kwargs["model_settings"].temperature == 0.7
+
     async def test_explicit_none_model_settings_produces_fresh_model_settings(self) -> None:
         """Passing model_settings=None explicitly behaves the same as omitting it."""
         mock_model, mock_get_response = _make_mock_model('{"selected": ["skill_a"]}')
