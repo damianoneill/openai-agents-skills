@@ -291,6 +291,23 @@ router = LLMSkillRouter(model=LitellmModel(model="bedrock/anthropic.claude-3-hai
 registry = SkillRegistry(router=router)
 ```
 
+For providers that require extra configuration on the model call — such as AWS
+Bedrock credentials via `extra_args` or inference profiles via `extra_body` —
+pass a `ModelSettings` instance to `model_settings`:
+
+```python
+from agents.model_settings import ModelSettings
+from openai_agents_skills import LLMSkillRouter, SkillRegistry
+
+router = LLMSkillRouter(
+    model=model,
+    model_settings=ModelSettings(
+        extra_args={"aws_access_key_id": "...", "aws_secret_access_key": "..."}
+    ),
+)
+registry = SkillRegistry(router=router)
+```
+
 For truly custom integrations not covered by the SDK (e.g. a proprietary API with
 a non-standard interface), subclass `BaseSkillRouter` and implement only
 `_call_model`. All routing logic — prompt building, JSON extraction, and LRU
