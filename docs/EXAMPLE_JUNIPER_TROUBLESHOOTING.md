@@ -148,6 +148,12 @@ router — it injects on every LLM call as long as `is_enabled()` returns `True`
 The other three skills use `always_on=False` (default), so they only inject when the
 `LLMSkillRouter` selects them for the current message.
 
+Notice that each routed description follows the "_what it does_. Use when _user
+reports A, B, C_" form — the descriptions enumerate the symptoms a user would
+actually type, which is what lets the router select them reliably. See
+[Writing Effective Descriptions](../README.md#writing-effective-descriptions) for
+the full convention.
+
 > **SKILL.md note:** Skill names must follow the [agentskills.io](https://agentskills.io)
 > specification — lowercase letters, digits, and hyphens only; 1–64 characters; no
 > leading/trailing hyphen; no consecutive hyphens (`--`). All four names above are valid.

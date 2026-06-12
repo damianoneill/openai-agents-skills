@@ -14,7 +14,6 @@ procedures as composable named units that can be shared across agents without du
 File-based skills follow the [agentskills.io](https://agentskills.io/) open standard, making
 `SKILL.md` files portable across any compatible agent tool.
 
-
 ---
 
 ## Installation
@@ -97,15 +96,15 @@ class ReplyInBulletsSkill(Skill):
 
 ### Class attributes
 
-| Attribute             | Type        | Purpose                                                                                    |
-| --------------------- | ----------- | ------------------------------------------------------------------------------------------ |
-| `name`                | `str`       | Unique identifier                                                                          |
-| `description`         | `str`       | Human-readable summary; used by routing logic to decide relevance                         |
-| `always_on`           | `bool`      | `True` → injects on every call; `False` (default) → routed by description                |
-| `allowed_tools`       | `list[str]` | Tools this skill may invoke; surfaced in the manifest. Default: `[]`                      |
-| `user_invocable`      | `bool`      | `False` hides the skill from the manifest while still allowing injection. Default: `True` |
-| `triggers_after_tools`| `list[str]` | Tool names that queue this skill for injection after the tool completes. Default: `[]`    |
-| `triggers_after_turn` | `bool`      | `True` → queued after every model response for quality checks or review. Default: `False` |
+| Attribute              | Type        | Purpose                                                                                   |
+| ---------------------- | ----------- | ----------------------------------------------------------------------------------------- |
+| `name`                 | `str`       | Unique identifier                                                                         |
+| `description`          | `str`       | Human-readable summary; used by routing logic to decide relevance                         |
+| `always_on`            | `bool`      | `True` → injects on every call; `False` (default) → routed by description                 |
+| `allowed_tools`        | `list[str]` | Tools this skill may invoke; surfaced in the manifest. Default: `[]`                      |
+| `user_invocable`       | `bool`      | `False` hides the skill from the manifest while still allowing injection. Default: `True` |
+| `triggers_after_tools` | `list[str]` | Tool names that queue this skill for injection after the tool completes. Default: `[]`    |
+| `triggers_after_turn`  | `bool`      | `True` → queued after every model response for quality checks or review. Default: `False` |
 
 ### Context-aware skills
 
@@ -191,20 +190,20 @@ any compatible agent tool (Cursor, VS Code, GitHub Copilot, Claude Code, and oth
 
 ```yaml
 ---
-name: payments-workflow          # required: lowercase letters, digits, hyphens; max 64 chars
-description: >                   # required: what the skill does and when to use it; max 1024 chars
+name: payments-workflow # required: lowercase letters, digits, hyphens; max 64 chars
+# description (required): what the skill does and when to use it; max 1024 chars
+description: >
   Guides the agent through the
   end-to-end payments workflow.
-license: MIT                     # optional
-compatibility: Requires Python 3.11+   # optional; max 500 chars
-metadata:                        # optional: arbitrary key-value pairs
+license: MIT # optional
+compatibility: Requires Python 3.11+ # optional; max 500 chars
+metadata: # optional: arbitrary key-value pairs
   author: my-team
   version: "1.0"
-allowed-tools: Bash(git:*) Read  # optional: space-separated list of pre-approved tools
-always-on: false                 # extension: inject unconditionally (default false)
-user-invocable: true             # extension: show in manifest (default true)
+allowed-tools: Bash(git:*) Read # optional: space-separated list of pre-approved tools
+always-on: false # extension: inject unconditionally (default false)
+user-invocable: true # extension: show in manifest (default true)
 ---
-
 Step-by-step instructions the agent follows when handling a payment request...
 ```
 
@@ -273,6 +272,67 @@ result = await Runner.run(
     hooks=RunSkillHooks(registry=registry),
 )
 ```
+
+---
+
+## Writing Effective Descriptions
+
+For routed skills (`always_on=False`), the `description` is the **only** text the
+router sees when deciding whether a skill is relevant — it doubles as human
+documentation and as the routing signal. A vague description is the most common
+cause of a skill that never gets selected.
+
+Write the description for a human deciding when to reach for the skill; the router
+benefits as a side effect. A few habits cover almost every case:
+
+- **Lead with the symptom in the user's words.** Users describe problems
+  ("clients aren't getting addresses"), not internals ("DHCPv4 binding subsystem").
+  The router matches against the user's message, so mirror their vocabulary.
+- **Add an explicit "use when…" clause** that enumerates the triggering
+  conditions. This is the single highest-leverage habit.
+- **Disambiguate from sibling skills with `Not for` lines.** Most routing
+  mistakes are confusion between near-neighbours, not a failure to find anything.
+  When two skills overlap, name what each is _not_ for and point to the right
+  one — e.g. `Not for AP-side loops — use ap-loop-troubleshooting instead.`
+  A single exclusion line prevents the most common class of mis-routing.
+- **Keep the core short; add exclusions only when needed.**
+  Start with the symptom and the "use when" clause; only add `Not for` lines and
+  scope notes when a skill has close neighbours. If the core description grows
+  past a short paragraph, that is usually a signal to split the skill. Remember
+  the hard budget below — the whole field must fit in 1024 characters.
+
+Avoid keyword-stuffing the description with bare terms (`dhcp lease pool relay
+option82 renew nak ...`). It reads worse for humans, drifts from the
+[agentskills.io](https://agentskills.io/) standard that other tools rely on, and
+actually routes _worse_ — a model reasons better over a clean "use when" sentence
+than over a bag of words.
+
+```yaml
+# Weak — only matches the literal word "DHCP"
+description: DHCP troubleshooting for Junos.
+
+# Strong — names the symptoms a user would actually type, and disambiguates
+description: >
+  Diagnose Junos DHCP server and relay problems. Use when a user reports leases
+  not renewing, clients not receiving addresses, address pool exhaustion, relay
+  forwarding misconfiguration, or Option 82 mismatches.
+  Not for DHCPv6 prefix delegation — use dhcpv6-troubleshooting instead.
+```
+
+This guidance applies equally to Python `Skill` subclasses and file-based
+`SKILL.md` skills.
+
+> **Length budget.** File-based skills have a hard limit of **1024 characters**
+> for `description`, set by the [agentskills.io](https://agentskills.io/)
+> specification. The loader rejects a longer description and skips the skill
+> (logged at debug level), so an over-long description silently disappears rather
+> than failing loudly. If you are porting skills from a tool that allows longer
+> descriptions, trim to 1024 characters and move detail into the body.
+>
+> **Field names.** This library reads `allowed-tools` (not `tools`) for the list
+> of tools a skill may invoke, and ignores non-standard fields such as `title`,
+> `headers`, `tags`, and `platforms` — they are parsed but have no effect on
+> loading or routing.
 
 ---
 
