@@ -39,7 +39,7 @@ stays lean and focused.
 | **`Skill`**                | A named unit of instructions. Implements `get_prompt_blocks()` which returns the content to prepend to the model's input.                                                                                                                   |
 | **Always-on skill**        | A skill with `always_on=True`. Injects on every LLM call unconditionally. Used for standing policies, org context, handoff rules.                                                                                                           |
 | **Routed skill**           | A skill with `always_on=False` (default). Only injects when a router selects it as relevant to the current message.                                                                                                                         |
-| **`SkillRegistry`**        | Holds all registered skills and knows which are always-on vs routable. One registry instance per agent — registries are not shared across agents.                                                                                           |
+| **`SkillRegistry`**        | Holds all registered skills and knows which are always-on vs routable. With per-agent `SkillHooks` you give each agent its own registry; with run-level `RunSkillHooks` a single registry is shared across every agent in the handoff chain. |
 | **`LLMSkillRouter`**       | Sends the user's message and a skill manifest to a lightweight model. Returns which routed skills to activate. Results are LRU-cached so repeated messages within a session pay the routing cost only once.                                 |
 | **`SkillHooks`**           | An `AgentHooks` subclass that wires the registry into the OpenAI Agents SDK loop. No monkey-patching — it uses the SDK's standard extension point.                                                                                          |
 | **`FileSkill` / SKILL.md** | A skill loaded from a Markdown file with YAML frontmatter. The body may contain `$ARGUMENTS` as a substitution placeholder (matching the [agentskills.io](https://agentskills.io) specification), plus `${KEY}` / `$KEY` variable patterns. |
@@ -129,9 +129,19 @@ agent = Agent(
 )
 ```
 
-Each agent has its own `SkillRegistry` instance. Skills registered with one agent are
-invisible to any other agent's router — if you run multiple specialised agents, construct
-a separate registry for each and attach it via its own `SkillHooks`.
+This example uses per-agent `SkillHooks`, so each agent has its own `SkillRegistry`
+instance and skills registered with one agent are invisible to any other agent's router.
+If you run multiple specialised agents this way, construct a separate registry for each
+and attach it via its own `SkillHooks`.
+
+> **Scoping across agents:** the alternative run-level pattern — `RunSkillHooks` with a
+> single shared registry, recommended for handoff chains — does **not** give you this
+> per-agent membership lever. A shared registry's `always_on` skills (including an
+> `always_on` skill loaded from a `SKILL.md`) inject for *every* agent in the run.
+> To scope a skill to a subset of agents on that path, gate it on the active agent: a
+> Python `Skill` overrides `is_enabled(context, agent)`; a `SKILL.md` skill has no
+> subclass to override, so assign a predicate to its `enabled_when` attribute after
+> loading (e.g. `skill.enabled_when = lambda context, agent: getattr(agent, "name", None) == "triage"`).
 
 ### Skills Registered
 

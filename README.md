@@ -148,6 +148,11 @@ class FeatureFlagSkill(Skill):
 
 Disabled skills are silently skipped by `SkillHooks` on every call.
 
+This pattern requires defining the skill as a Python subclass so you can override the
+method. Skills loaded from a `SKILL.md` file have no such override point; gate them by
+registry membership, or assign a predicate to their `enabled_when` attribute after
+loading — see the scoping note under [Registry & Routing](#registry--routing).
+
 ---
 
 ## Attaching Multiple Skills
@@ -272,6 +277,21 @@ result = await Runner.run(
     hooks=RunSkillHooks(registry=registry),
 )
 ```
+
+> **Scoping across agents:** `RunSkillHooks` shares one registry across every agent in
+> the chain, so an `always_on` skill injects for *all* of them — registry membership is
+> only a per-agent lever when each agent has its own registry via per-agent `SkillHooks`.
+> To scope a skill to a subset of agents on the shared-registry path, gate it on the
+> active agent. A Python `Skill` overrides `is_enabled(context, agent)`; a skill loaded
+> from a `SKILL.md` file has no subclass to override, so assign a predicate to its
+> `enabled_when` attribute after loading:
+>
+> ```python
+> for skill, _path in await load_skills_from_dir(skills_dir, SkillSource.PROJECT):
+>     if skill.name == "markdown-guidelines":
+>         skill.enabled_when = lambda context, agent: getattr(agent, "name", None) == "triage"
+>     registry.register(skill)
+> ```
 
 ---
 

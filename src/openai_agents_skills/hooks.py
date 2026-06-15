@@ -53,6 +53,7 @@ from agents import (
 )
 
 from ._state import RunState, _get_run_state
+from .loader import FileSkill
 from .registry import SkillRegistry
 from .skills import Skill
 
@@ -221,6 +222,41 @@ def _resolve_candidates(
     return _deduplicate([*base, *routed])
 
 
+def _log_ungated_always_on_file_skills(registry: SkillRegistry) -> None:
+    """Emit a one-time debug log for always-on file skills that have no gate.
+
+    A :class:`~openai_agents_skills.loader.FileSkill` with ``always_on=True`` and
+    no ``enabled_when`` predicate injects on every LLM call for every agent.  Under
+    run-level :class:`RunSkillHooks` with a shared registry that means it leaks
+    into every agent in a handoff chain with no per-agent off switch.  This log
+    makes that situation visible in debug output rather than only discoverable by
+    code review.
+
+    A file skill is considered *gated* when a predicate has been assigned to its
+    ``enabled_when`` attribute (the file-skill gating lever); otherwise it is
+    reported here.
+
+    Called once per run from :func:`_maybe_build_manifest_blocks` (guarded by
+    ``RunState.manifest_injected``).
+
+    Args:
+        registry: The registry whose skills are inspected.
+    """
+    ungated = [
+        skill.name
+        for skill in registry.all_skills
+        if isinstance(skill, FileSkill) and skill.always_on and skill.enabled_when is None
+    ]
+    if ungated:
+        _log.debug(
+            "Always-on file skills injecting with no enabled_when gate: %s. "
+            "Under RunSkillHooks with a shared registry these inject for every agent "
+            "in the run. Assign an enabled_when predicate to scope them, or use a "
+            "per-agent registry.",
+            ", ".join(sorted(ungated)),
+        )
+
+
 def _maybe_build_manifest_blocks(
     state: RunState,
     registry: SkillRegistry | None,
@@ -243,6 +279,7 @@ def _maybe_build_manifest_blocks(
     if state.manifest_injected or registry is None:
         return []
     state.manifest_injected = True
+    _log_ungated_always_on_file_skills(registry)
     manifest_text = _build_manifest(registry.all_skills, max_manifest_skills)
     if not manifest_text:
         return []

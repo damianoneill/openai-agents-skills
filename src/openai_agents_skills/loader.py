@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -157,9 +158,22 @@ class FileSkill(Skill):
     arguments avoid redundant string work.  The cache is instance-local and never
     invalidated — reload the registry to pick up on-disk changes.
 
+    Because a ``SKILL.md`` file has no Python class for an author to subclass, the
+    usual :meth:`~openai_agents_skills.skills.Skill.is_enabled` override point is
+    unavailable.  Instead, a host may assign a predicate to :attr:`enabled_when`
+    after loading to gate the skill at runtime — useful for scoping an
+    ``always_on`` file skill to a subset of agents under run-level
+    :class:`~openai_agents_skills.hooks.RunSkillHooks` with a shared registry,
+    where registry membership is not a per-agent lever.
+
     Attributes:
         source: The :class:`SkillSource` trust level this skill was loaded from.
         file_path: Absolute path to the SKILL.md file on disk.
+        enabled_when: Optional predicate ``(context, agent) -> bool`` consulted by
+            :meth:`is_enabled`.  ``None`` (default) means the skill is always
+            enabled.  Assign a callable after loading to gate the skill; the
+            signature mirrors :meth:`is_enabled` so it receives the current
+            ``RunContextWrapper`` and ``Agent``.
 
     Example::
 
@@ -171,6 +185,9 @@ class FileSkill(Skill):
         skill = FileSkill(fields=fields, body="Say hello!", file_path=Path("greet/SKILL.md"))
         blocks = await skill.get_prompt_blocks()
         # [{"role": "user", "content": "Say hello!"}]
+
+        # Scope the skill to the triage agent only:
+        skill.enabled_when = lambda context, agent: getattr(agent, "name", None) == "triage"
     """
 
     def __init__(
@@ -205,6 +222,34 @@ class FileSkill(Skill):
         self._body = body
         self._variables: dict[str, str] = dict(variables) if variables else {}
         self._cache: dict[str, list[Any]] = {}
+        self.enabled_when: (
+            Callable[[RunContextWrapper[Any] | None, Agent[Any] | None], bool] | None
+        ) = None
+
+    def is_enabled(
+        self,
+        context: RunContextWrapper[Any] | None = None,
+        agent: Agent[Any] | None = None,
+    ) -> bool:
+        """Return whether this file skill should be injected on the current call.
+
+        Delegates to :attr:`enabled_when` when a predicate has been assigned;
+        otherwise returns ``True`` (the inherited default), so an unmodified file
+        skill is always enabled.  This is the gating lever for file skills, which
+        cannot override :meth:`~openai_agents_skills.skills.Skill.is_enabled` by
+        subclassing because they have no Python class.
+
+        Args:
+            context: The current run context, or ``None`` if not available.
+            agent: The current agent, or ``None`` if not available.
+
+        Returns:
+            ``self.enabled_when(context, agent)`` when a predicate is set, else
+            ``True``.
+        """
+        if self.enabled_when is not None:
+            return self.enabled_when(context, agent)
+        return True
 
     async def get_prompt_blocks(
         self,

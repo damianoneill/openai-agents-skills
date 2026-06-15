@@ -224,6 +224,38 @@ class TestFileSkill:
         skill = FileSkill(fields=_make_fields(), body="b", file_path=p)
         assert skill.file_path == p
 
+    # ------------------------------------------------------------------
+    # enabled_when gate
+    # ------------------------------------------------------------------
+
+    def test_is_enabled_true_by_default(self, tmp_path: Path) -> None:
+        """A FileSkill with no enabled_when predicate is always enabled."""
+        skill = FileSkill(fields=_make_fields(), body="b", file_path=tmp_path / "SKILL.md")
+        assert skill.enabled_when is None
+        assert skill.is_enabled(None, None) is True
+
+    @pytest.mark.parametrize("verdict", [True, False])
+    def test_is_enabled_delegates_to_enabled_when(self, tmp_path: Path, verdict: bool) -> None:
+        """When a predicate is set, is_enabled returns its result."""
+        skill = FileSkill(fields=_make_fields(), body="b", file_path=tmp_path / "SKILL.md")
+        skill.enabled_when = lambda context, agent: verdict
+        assert skill.is_enabled(None, None) is verdict
+
+    def test_enabled_when_receives_context_and_agent(self, tmp_path: Path) -> None:
+        """The predicate is called with the exact context and agent objects."""
+        received: list[tuple[Any, Any]] = []
+        skill = FileSkill(fields=_make_fields(), body="b", file_path=tmp_path / "SKILL.md")
+
+        def predicate(context: Any, agent: Any) -> bool:
+            received.append((context, agent))
+            return True
+
+        skill.enabled_when = predicate
+        ctx = object()
+        agent = object()
+        skill.is_enabled(ctx, agent)
+        assert received == [(ctx, agent)]
+
 
 # ===========================================================================
 # _parse_frontmatter

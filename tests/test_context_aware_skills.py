@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
 from agents.tool_context import ToolContext
 from conftest import (
     fire_llm_end,
@@ -20,6 +23,7 @@ from conftest import (
 from openai_agents_skills import Skill, SkillHooks, SkillRegistry, make_invoke_skill_tool
 from openai_agents_skills._state import _get_run_state  # noqa: F401
 from openai_agents_skills.hooks import RunSkillHooks
+from openai_agents_skills.loader import FileSkill, _SkillFields
 
 # ---------------------------------------------------------------------------
 # 1 & 3.  get_prompt_blocks forwarding through SkillHooks (identity checks)
@@ -877,3 +881,133 @@ class TestInvokeSkillContext:
         assert ctx_received is tool_ctx
         assert args_received == "foo bar"
         assert "foo bar" in result
+
+
+# ---------------------------------------------------------------------------
+# 8.  FileSkill.enabled_when gates an always-on file skill under RunSkillHooks
+# ---------------------------------------------------------------------------
+
+
+def _always_on_file_skill(name: str, content: str) -> FileSkill:
+    """Build an always-on FileSkill whose body is *content*."""
+    fields = _SkillFields(name=name, description=f"Skill {name}", always_on=True)
+    return FileSkill(fields=fields, body=content, file_path=Path(f"{name}/SKILL.md"))
+
+
+class TestFileSkillEnabledWhenUnderRunSkillHooks:
+    """An always-on file skill in a shared registry is scoped per-agent via enabled_when.
+
+    This is the run-level scenario: a single registry is shared across every agent in a
+    handoff chain via RunSkillHooks, so registry membership is not a per-agent lever.
+    Setting enabled_when on the FileSkill instance is the only way to scope it.
+    """
+
+    async def test_enabled_when_suppresses_for_non_matching_agent(self) -> None:
+        skill = _always_on_file_skill("markdown-guidelines", "markdown-body")
+        skill.enabled_when = lambda context, agent: getattr(agent, "name", None) == "triage"
+
+        registry = SkillRegistry()
+        registry.register(skill)
+        hooks = make_run_hooks(registry)
+
+        other_agent = MagicMock()
+        other_agent.name = "sonic"
+        await hooks.on_agent_start(make_mock_context(), make_mock_agent())
+        input_items: list[Any] = []
+        await fire_llm_start(hooks, input_items, agent=other_agent)
+
+        contents = [b["content"] for b in input_items if isinstance(b, dict)]
+        assert "markdown-body" not in contents
+
+    async def test_enabled_when_injects_for_matching_agent(self) -> None:
+        skill = _always_on_file_skill("markdown-guidelines", "markdown-body")
+        skill.enabled_when = lambda context, agent: getattr(agent, "name", None) == "triage"
+
+        registry = SkillRegistry()
+        registry.register(skill)
+        hooks = make_run_hooks(registry)
+
+        triage_agent = MagicMock()
+        triage_agent.name = "triage"
+        await hooks.on_agent_start(make_mock_context(), make_mock_agent())
+        input_items: list[Any] = []
+        await fire_llm_start(hooks, input_items, agent=triage_agent)
+
+        contents = [b["content"] for b in input_items if isinstance(b, dict)]
+        assert "markdown-body" in contents
+
+    async def test_ungated_always_on_file_skill_still_injects(self) -> None:
+        # Regression guard: an unmodified always-on file skill is unaffected by the new lever.
+        skill = _always_on_file_skill("escalation-policy", "escalation-body")
+
+        registry = SkillRegistry()
+        registry.register(skill)
+        hooks = make_run_hooks(registry)
+
+        await hooks.on_agent_start(make_mock_context(), make_mock_agent())
+        input_items: list[Any] = []
+        await fire_llm_start(hooks, input_items, agent=make_mock_agent())
+
+        contents = [b["content"] for b in input_items if isinstance(b, dict)]
+        assert "escalation-body" in contents
+
+
+# ---------------------------------------------------------------------------
+# 9.  Debug log for un-gated always-on file skills (leak visibility)
+# ---------------------------------------------------------------------------
+
+
+class TestUngatedAlwaysOnFileSkillDebugLog:
+    """The one-time debug log fires only for an always-on file skill with no enabled_when.
+
+    Drives the log through the real pipeline (first on_llm_start builds the manifest,
+    which is where the detection runs), so the test also guards that the detection wiring
+    is reachable — the gap that let a dead-code regression pass silently before.
+    """
+
+    _LOGGER = "openai_agents_skills.hooks"
+    _MESSAGE_PREFIX = "Always-on file skills injecting"
+
+    async def test_log_fires_for_ungated_always_on_file_skill(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        skill = _always_on_file_skill("markdown-guidelines", "md-body")
+        registry = SkillRegistry()
+        registry.register(skill)
+        hooks = make_run_hooks(registry)
+
+        await hooks.on_agent_start(make_mock_context(), make_mock_agent())
+        with caplog.at_level(logging.DEBUG, logger=self._LOGGER):
+            await fire_llm_start(hooks, [], agent=make_mock_agent())
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(self._MESSAGE_PREFIX in m and "markdown-guidelines" in m for m in messages)
+
+    async def test_log_silent_once_enabled_when_is_set(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        skill = _always_on_file_skill("markdown-guidelines", "md-body")
+        skill.enabled_when = lambda context, agent: True
+        registry = SkillRegistry()
+        registry.register(skill)
+        hooks = make_run_hooks(registry)
+
+        await hooks.on_agent_start(make_mock_context(), make_mock_agent())
+        with caplog.at_level(logging.DEBUG, logger=self._LOGGER):
+            await fire_llm_start(hooks, [], agent=make_mock_agent())
+
+        assert not any(self._MESSAGE_PREFIX in r.getMessage() for r in caplog.records)
+
+    async def test_log_silent_for_routed_file_skill(self, caplog: pytest.LogCaptureFixture) -> None:
+        # always_on=False file skills are not unconditional, so they are never reported.
+        fields = _SkillFields(name="routed-skill", description="x", always_on=False)
+        skill = FileSkill(fields=fields, body="b", file_path=Path("routed-skill/SKILL.md"))
+        registry = SkillRegistry()
+        registry.register(skill)
+        hooks = make_run_hooks(registry)
+
+        await hooks.on_agent_start(make_mock_context(), make_mock_agent())
+        with caplog.at_level(logging.DEBUG, logger=self._LOGGER):
+            await fire_llm_start(hooks, [], agent=make_mock_agent())
+
+        assert not any(self._MESSAGE_PREFIX in r.getMessage() for r in caplog.records)
