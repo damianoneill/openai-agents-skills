@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from .instruction_forms import InstructionForm, get_instruction_form
 from .registry import SkillRegistry
 from .skills import Skill
 from .substitution import substitute_args
@@ -139,6 +140,7 @@ class _SkillFields:
     license_: str = ""
     compatibility: str = ""
     metadata: dict[str, str] = field(default_factory=dict)
+    concise_instructions: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -220,8 +222,9 @@ class FileSkill(Skill):
         self.source = source
         self.file_path = file_path
         self._body = body
+        self._concise_body = fields.concise_instructions
         self._variables: dict[str, str] = dict(variables) if variables else {}
-        self._cache: dict[str, list[Any]] = {}
+        self._cache: dict[tuple[InstructionForm, str], list[Any]] = {}
         self.enabled_when: (
             Callable[[RunContextWrapper[Any] | None, Agent[Any] | None], bool] | None
         ) = None
@@ -259,10 +262,16 @@ class FileSkill(Skill):
     ) -> list[Any]:
         """Return the skill body as a user-role prompt block.
 
-        Applies :func:`~openai_agents_skills.substitution.substitute_args` to the
-        stored body before wrapping it.  Results are cached by *args* — the same
-        list object is returned on repeated calls with identical arguments (useful
-        for identity checks in tests).
+        Selects the effective body for the active instruction form (see
+        :func:`~openai_agents_skills.instruction_forms.get_instruction_form`),
+        then applies
+        :func:`~openai_agents_skills.substitution.substitute_args` before
+        wrapping it.  When a concise form is requested but this skill supplies no
+        concise body, the default body is used and the same cached list object as
+        a default request with identical *args* is returned.  Results are cached
+        by ``(effective_form, args)`` — the same list object is returned on
+        repeated calls with the same form and arguments (useful for identity
+        checks in tests).
 
         Args:
             args: Optional whitespace-separated argument values.  Passed to
@@ -278,10 +287,24 @@ class FileSkill(Skill):
                 pattern (see
                 :func:`~openai_agents_skills.substitution.substitute_args`).
         """
-        if args not in self._cache:
-            body = substitute_args(self._body, args, self._variables)
-            self._cache[args] = [{"role": "user", "content": body}]
-        return self._cache[args]
+        requested = get_instruction_form()
+        effective = (
+            InstructionForm.CONCISE
+            if requested is InstructionForm.CONCISE and self._concise_body
+            else InstructionForm.DEFAULT
+        )
+        if requested is InstructionForm.CONCISE and effective is InstructionForm.DEFAULT:
+            _log.debug(
+                "Skill %r has no concise instructions; rendering %s form.",
+                self.name,
+                InstructionForm.DEFAULT.value,
+            )
+        key = (effective, args)
+        if key not in self._cache:
+            source = self._concise_body if effective is InstructionForm.CONCISE else self._body
+            body = substitute_args(source, args, self._variables)
+            self._cache[key] = [{"role": "user", "content": body}]
+        return self._cache[key]
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +508,13 @@ def _parse_skill_file(content: str, dir_name: str) -> tuple[_SkillFields, str] |
         else:
             _log.debug("Skill %r: 'metadata' field is not a mapping; ignoring.", name)
 
+    concise_instructions = ""
+    concise_raw = fields_dict.get("concise-instructions")
+    if concise_raw is not None:
+        if not isinstance(concise_raw, str):
+            raise ValueError(f"Skill {name!r}: 'concise-instructions' must be a string.")
+        concise_instructions = concise_raw.strip()
+
     skill_fields = _SkillFields(
         name=name,
         description=description,
@@ -495,6 +525,7 @@ def _parse_skill_file(content: str, dir_name: str) -> tuple[_SkillFields, str] |
         license_=license_,
         compatibility=compatibility,
         metadata=metadata,
+        concise_instructions=concise_instructions,
     )
     return skill_fields, body.strip()
 

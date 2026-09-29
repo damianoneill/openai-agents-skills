@@ -208,6 +208,8 @@ metadata: # optional: arbitrary key-value pairs
 allowed-tools: Bash(git:*) Read # optional: space-separated list of pre-approved tools
 always-on: false # extension: inject unconditionally (default false)
 user-invocable: true # extension: show in manifest (default true)
+concise-instructions: | # extension: authored concise form (see Instruction forms)
+  Shorter equivalent instructions used when a concise scope is active.
 ---
 Step-by-step instructions the agent follows when handling a payment request...
 ```
@@ -234,6 +236,72 @@ agent = Agent(
 
 `load_all_skills` searches the user layer (`~/.agent/skills/`) then the project layer
 (`.agent/skills/` relative to `cwd`). User-layer skills win on name conflicts.
+
+---
+
+## Instruction forms
+
+Skills can render a shorter, authored "concise" form of their instructions when an
+application asks for it. This helps when the same skills run against models that differ
+in context budget or in how well they follow long instructions. The library selects the
+form the application requests. It does not shorten text itself or decide which model
+needs concise instructions, and required actions, permissions and safety constraints
+must stay intact in both forms.
+
+Select the form for a run with `instruction_form_scope`, wrapping the call that runs the
+agent. Outside a scope, skills render their default instructions:
+
+```python
+from openai_agents_skills import InstructionForm, RunSkillHooks, instruction_form_scope
+from agents import Runner
+
+hooks = RunSkillHooks(registry=registry)
+
+with instruction_form_scope(InstructionForm.CONCISE):
+    result = await Runner.run(agent, question, hooks=hooks)
+```
+
+For a streamed run, enter the scope before creating the stream and keep it around event
+consumption:
+
+```python
+with instruction_form_scope(InstructionForm.CONCISE):
+    result = Runner.run_streamed(agent, question, hooks=hooks)
+    async for event in result.stream_events():
+        ...
+```
+
+Python skills read the active form inside `get_prompt_blocks` and return the matching
+content. Skills that ignore the form keep their existing behaviour:
+
+```python
+from openai_agents_skills import InstructionForm, Skill, get_instruction_form
+
+class EvidenceSkill(Skill):
+    name = "evidence-reporting"
+    description = "Explains findings with supporting evidence."
+
+    async def get_prompt_blocks(self, context, agent, args=""):
+        if get_instruction_form() is InstructionForm.CONCISE:
+            content = "Use available evidence. Separate facts from hypotheses. Cite sources."
+        else:
+            content = (
+                "Base findings on the evidence available for this request. Distinguish "
+                "established facts from hypotheses and explain the support for each "
+                "conclusion. Cite the sources used and identify what remains unknown."
+            )
+        return [{"role": "user", "content": content}]
+```
+
+File skills supply a concise form with the optional `concise-instructions` frontmatter
+field (shown in the SKILL.md format above). The Markdown body stays the default. A file
+skill with no concise body renders its default body when a concise form is requested, so
+a run always gets usable instructions.
+
+Each independent run should enter its own scope. The selection is scoped to the enclosing
+execution, is not visible to the model, and cannot be changed through user text or
+invocation arguments. It changes only which instructions render; routing, the manifest
+and skill enablement are unaffected.
 
 ---
 

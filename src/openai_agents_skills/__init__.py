@@ -53,6 +53,7 @@ Requirements::
 
 from ._version import __version__
 from .hooks import RunSkillHooks, SkillHooks, make_invoke_skill_tool
+from .instruction_forms import InstructionForm, get_instruction_form, instruction_form_scope
 from .loader import FileSkill, SkillConfig, SkillSource, load_all_skills, load_skills_from_dir
 from .registry import SkillRegistry
 from .router import BaseSkillRouter, LLMSkillRouter, SkillRouter
@@ -63,6 +64,7 @@ __all__ = [
     "__version__",
     "FileSkill",
     "BaseSkillRouter",
+    "InstructionForm",
     "LLMSkillRouter",
     "RunSkillHooks",
     "Skill",
@@ -71,6 +73,8 @@ __all__ = [
     "SkillRegistry",
     "SkillRouter",
     "SkillSource",
+    "get_instruction_form",
+    "instruction_form_scope",
     "load_all_skills",
     "load_skills_from_dir",
     "make_invoke_skill_tool",
