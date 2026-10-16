@@ -13,24 +13,15 @@ import json
 from typing import Any
 
 import pytest
-from agents import Agent, Runner
-from agents.items import ModelResponse
-from agents.models.interface import Model
+from agents import Agent, Runner, function_tool
 from agents.tool_context import ToolContext
-from agents.usage import Usage
 from conftest import (
+    FakeModel,
+    make_handoff_call,
     make_hooks,
-    make_mock_agent,
-    make_mock_context,
-    make_mock_response,
+    make_message,
     make_run_hooks,
-)
-from openai.types.responses import (
-    Response,
-    ResponseCompletedEvent,
-    ResponseFunctionToolCall,
-    ResponseOutputMessage,
-    ResponseOutputText,
+    make_tool_call,
 )
 
 from openai_agents_skills import (
@@ -41,102 +32,6 @@ from openai_agents_skills import (
     instruction_form_scope,
     make_invoke_skill_tool,
 )
-
-# ---------------------------------------------------------------------------
-# Recording fake model
-# ---------------------------------------------------------------------------
-
-
-def _message(text: str) -> ResponseOutputMessage:
-    return ResponseOutputMessage(
-        id="m",
-        role="assistant",
-        status="completed",
-        type="message",
-        content=[ResponseOutputText(text=text, type="output_text", annotations=[])],
-    )
-
-
-def _handoff_call(agent_name: str) -> ResponseFunctionToolCall:
-    return ResponseFunctionToolCall(
-        id="h",
-        call_id="c",
-        name=f"transfer_to_{agent_name}",
-        arguments="{}",
-        type="function_call",
-    )
-
-
-def _tool_call(name: str, call_id: str, arguments: str = "{}") -> ResponseFunctionToolCall:
-    return ResponseFunctionToolCall(
-        id=call_id, call_id=call_id, name=name, arguments=arguments, type="function_call"
-    )
-
-
-def _response(output: list[Any]) -> Response:
-    return Response(
-        id="r",
-        created_at=0.0,
-        model="fake",
-        object="response",
-        output=output,
-        parallel_tool_calls=False,
-        tool_choice="auto",
-        tools=[],
-    )
-
-
-class _FakeModel(Model):
-    """Records the ``input`` seen on every model call and replays scripted turns."""
-
-    def __init__(self, turns: list[list[Any]] | None = None) -> None:
-        self._turns = turns
-        self._i = 0
-        self.inputs: list[Any] = []
-
-    def _next(self) -> list[Any]:
-        if self._turns is None:
-            return [_message("done")]
-        out = self._turns[self._i]
-        self._i += 1
-        return out
-
-    async def get_response(
-        self,
-        system_instructions: Any,
-        input: Any,
-        model_settings: Any,
-        tools: Any,
-        output_schema: Any,
-        handoffs: Any,
-        tracing: Any,
-        *,
-        previous_response_id: Any = None,
-        conversation_id: Any = None,
-        prompt: Any = None,
-    ) -> ModelResponse:
-        self.inputs.append(input)
-        return ModelResponse(output=self._next(), usage=Usage(), response_id=None)
-
-    async def stream_response(
-        self,
-        system_instructions: Any,
-        input: Any,
-        model_settings: Any,
-        tools: Any,
-        output_schema: Any,
-        handoffs: Any,
-        tracing: Any,
-        *,
-        previous_response_id: Any = None,
-        conversation_id: Any = None,
-        prompt: Any = None,
-    ) -> Any:
-        self.inputs.append(input)
-        yield ResponseCompletedEvent(
-            type="response.completed", response=_response(self._next()), sequence_number=0
-        )
-
 
 # ---------------------------------------------------------------------------
 # Skills that record the active instruction form
@@ -202,20 +97,20 @@ def _registry() -> SkillRegistry:
 
 class TestRunnerRunPropagation:
     async def test_default_form_without_scope(self) -> None:
-        model = _FakeModel()
+        model = FakeModel()
         agent = Agent(name="a", instructions="x", model=model, hooks=make_hooks(_registry()))
         await Runner.run(agent, "hello")
         assert _marker_values(model.inputs[0], "FORM=") == ["default"]
 
     async def test_agent_hooks_observe_concise_scope(self) -> None:
-        model = _FakeModel()
+        model = FakeModel()
         agent = Agent(name="a", instructions="x", model=model, hooks=make_hooks(_registry()))
         with instruction_form_scope(InstructionForm.CONCISE):
             await Runner.run(agent, "hello")
         assert _marker_values(model.inputs[0], "FORM=") == ["concise"]
 
     async def test_run_hooks_observe_concise_scope(self) -> None:
-        model = _FakeModel()
+        model = FakeModel()
         agent = Agent(name="a", instructions="x", model=model)
         with instruction_form_scope(InstructionForm.CONCISE):
             await Runner.run(agent, "hello", hooks=make_run_hooks(_registry()))
@@ -223,7 +118,7 @@ class TestRunnerRunPropagation:
 
     async def test_both_hook_types_observe_concise_scope(self) -> None:
         registry = _registry()
-        model = _FakeModel()
+        model = FakeModel()
         agent = Agent(name="a", instructions="x", model=model, hooks=make_hooks(registry))
         with instruction_form_scope(InstructionForm.CONCISE):
             await Runner.run(agent, "hello", hooks=make_run_hooks(registry))
@@ -240,7 +135,7 @@ class TestRunnerRunPropagation:
 
 class TestRunnerStreamedPropagation:
     async def test_streamed_observes_concise_scope(self) -> None:
-        model = _FakeModel()
+        model = FakeModel()
         agent = Agent(name="a", instructions="x", model=model, hooks=make_hooks(_registry()))
         with instruction_form_scope(InstructionForm.CONCISE):
             result = Runner.run_streamed(agent, "hello")
@@ -250,7 +145,7 @@ class TestRunnerStreamedPropagation:
 
     async def test_streamed_both_hook_types_observe_scope(self) -> None:
         registry = _registry()
-        model = _FakeModel()
+        model = FakeModel()
         agent = Agent(name="a", instructions="x", model=model, hooks=make_hooks(registry))
         with instruction_form_scope(InstructionForm.CONCISE):
             result = Runner.run_streamed(agent, "hello", hooks=make_run_hooks(registry))
@@ -261,7 +156,7 @@ class TestRunnerStreamedPropagation:
         assert set(values) == {"concise"}
 
     async def test_streamed_cancellation_drains_and_restores(self) -> None:
-        model = _FakeModel()
+        model = FakeModel()
         agent = Agent(name="a", instructions="x", model=model, hooks=make_hooks(_registry()))
         with instruction_form_scope(InstructionForm.CONCISE):
             result = Runner.run_streamed(agent, "hello")
@@ -283,7 +178,7 @@ class TestRunnerStreamedPropagation:
 class TestConcurrencyAndHandoff:
     async def test_concurrent_runs_do_not_leak_form(self) -> None:
         async def run_with(form: InstructionForm) -> list[str]:
-            model = _FakeModel()
+            model = FakeModel()
             agent = Agent(name="a", instructions="x", model=model, hooks=make_hooks(_registry()))
             with instruction_form_scope(form):
                 await Runner.run(agent, "hello")
@@ -301,7 +196,7 @@ class TestConcurrencyAndHandoff:
         shared_hooks = make_run_hooks(shared_registry)
 
         async def run_with(form: InstructionForm) -> list[str]:
-            model = _FakeModel()
+            model = FakeModel()
             agent = Agent(name="a", instructions="x", model=model)
             with instruction_form_scope(form):
                 await Runner.run(agent, "hello", hooks=shared_hooks)
@@ -314,7 +209,7 @@ class TestConcurrencyAndHandoff:
         assert default == ["default"]
 
     async def test_handoff_receiving_agent_observes_form(self) -> None:
-        model = _FakeModel(turns=[[_handoff_call("b")], [_message("final")]])
+        model = FakeModel(turns=[[make_handoff_call("b")], [make_message("final")]])
         receiver = Agent(name="b", instructions="x", model=model)
         starter = Agent(name="a", instructions="x", model=model, handoffs=[receiver])
         with instruction_form_scope(InstructionForm.CONCISE):
@@ -349,10 +244,10 @@ class TestExplicitAndDeferred:
         registry = SkillRegistry()
         registry.register(_InvokableMarkerSkill())
         tool = make_invoke_skill_tool(registry)
-        model = _FakeModel(
+        model = FakeModel(
             turns=[
-                [_tool_call("invoke_skill", "c1", json.dumps({"skill_name": "invokable"}))],
-                [_message("final")],
+                [make_tool_call("invoke_skill", "c1", json.dumps({"skill_name": "invokable"}))],
+                [make_message("final")],
             ]
         )
         agent = Agent(
@@ -368,22 +263,22 @@ class TestExplicitAndDeferred:
         assert "INVOKED=concise" in _flatten(model.inputs[1])
 
     async def test_deferred_post_turn_skill_observes_form(self) -> None:
-        # Exercises the real _drain_pending rendering path directly. End-to-end
-        # deferred injection across a real Runner turn/handoff does not propagate
-        # in this SDK (a pre-existing RunState-lifecycle limitation, tracked
-        # separately), so this is driven at the hook level rather than via Runner.
+        @function_tool
+        def noop() -> str:
+            return "ok"
+
         registry = SkillRegistry()
         registry.register(_DeferredMarkerSkill())
-        hooks = make_hooks(registry)
-
-        await hooks.on_start(make_mock_context(), make_mock_agent())
-        await hooks.on_llm_end(make_mock_context(), make_mock_agent(), make_mock_response())
-
-        input_items: list[Any] = [{"role": "user", "content": "hello"}]
+        model = FakeModel(turns=[[make_tool_call("noop", "c1")], [make_message("final")]])
+        agent = Agent(
+            name="a", instructions="x", model=model, tools=[noop], hooks=make_hooks(registry)
+        )
         with instruction_form_scope(InstructionForm.CONCISE):
-            await hooks.on_llm_start(make_mock_context(), make_mock_agent(), None, input_items)
+            await Runner.run(agent, "hello")
 
-        assert _marker_values(input_items, "DEFERRED=") == ["concise"]
+        # Queued after the first model response, rendered into the second call.
+        assert _marker_values(model.inputs[0], "DEFERRED=") == []
+        assert _marker_values(model.inputs[1], "DEFERRED=") == ["concise"]
 
 
 # ---------------------------------------------------------------------------

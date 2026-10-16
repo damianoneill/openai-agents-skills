@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 from agents.tool_context import ToolContext
+from agents.usage import Usage
 from conftest import (
     MockRouter,
     SimpleSkill,
@@ -69,11 +70,15 @@ class _ErrorSkill(Skill):
         raise ValueError(f"Skill {self.name!r} intentionally failed")
 
 
-async def _invoke(tool: Any, skill_name: str, args: str = "") -> str:
-    """Helper to invoke a FunctionTool returned by make_invoke_skill_tool."""
+async def _invoke(tool: Any, skill_name: str, args: str = "", usage: Usage | None = None) -> str:
+    """Helper to invoke a FunctionTool returned by make_invoke_skill_tool.
+
+    Pass the same *usage* to simulate several calls within one run.
+    """
     args_json = json.dumps({"skill_name": skill_name, "args": args})
     ctx = ToolContext(
         context=None,
+        usage=usage if usage is not None else Usage(),
         tool_name="invoke_skill",
         tool_call_id="test_call_id",
         tool_arguments=args_json,
@@ -1119,14 +1124,23 @@ class TestInvokeSkillTool:
         registry = SkillRegistry()
         registry.register(SimpleSkill("s", content="ok"))
         tool = make_invoke_skill_tool(registry, max_calls_per_run=2)
+        run_usage = Usage()
 
-        r1 = await _invoke(tool, "s")
-        r2 = await _invoke(tool, "s")
-        r3 = await _invoke(tool, "s")
+        r1 = await _invoke(tool, "s", usage=run_usage)
+        r2 = await _invoke(tool, "s", usage=run_usage)
+        r3 = await _invoke(tool, "s", usage=run_usage)
 
         assert r1 == "ok"
         assert r2 == "ok"
         assert "limit reached" in r3
+
+    async def test_max_calls_per_run_guard_is_per_run(self) -> None:
+        registry = SkillRegistry()
+        registry.register(SimpleSkill("s", content="ok"))
+        tool = make_invoke_skill_tool(registry, max_calls_per_run=1)
+
+        assert await _invoke(tool, "s", usage=Usage()) == "ok"
+        assert await _invoke(tool, "s", usage=Usage()) == "ok"
 
     async def test_max_calls_zero_disables_guard(self) -> None:
         """max_calls_per_run=0 means the guard is disabled entirely."""
@@ -1142,12 +1156,17 @@ class TestInvokeSkillTool:
         registry = SkillRegistry()
         registry.register(SimpleSkill("s", content="ok"))
         tool = make_invoke_skill_tool(registry, max_calls_per_run=10)
+        run_usage = Usage()
 
-        await _invoke(tool, "s")
-        await _invoke(tool, "s")
-        await _invoke(tool, "s")
+        await _invoke(tool, "s", usage=run_usage)
+        await _invoke(tool, "s", usage=run_usage)
+        await _invoke(tool, "s", usage=run_usage)
 
-        state = _get_run_state()
+        state = _get_run_state(
+            ToolContext(
+                context=None, usage=run_usage, tool_name="t", tool_call_id="c", tool_arguments="{}"
+            )
+        )
         assert state.invoke_skill_calls == 3
 
     async def test_invoke_skill_empty_registry_returns_error(self) -> None:

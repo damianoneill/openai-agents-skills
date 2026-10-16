@@ -236,8 +236,8 @@ def _log_ungated_always_on_file_skills(registry: SkillRegistry) -> None:
     ``enabled_when`` attribute (the file-skill gating lever); otherwise it is
     reported here.
 
-    Called once per run from :func:`_maybe_build_manifest_blocks` (guarded by
-    ``RunState.manifest_injected``).
+    Called once per agent per run from :func:`_maybe_build_manifest_blocks`
+    (guarded by ``RunState.manifest_injected``).
 
     Args:
         registry: The registry whose skills are inspected.
@@ -391,7 +391,7 @@ class _SkillInjectionMixin:
         pending triggered skills, then prepends all resulting prompt blocks to
         *input_items*.
         """
-        state = _get_run_state()
+        state = _get_run_state(context, agent)
         state.last_context = context
         state.last_agent = agent
 
@@ -439,7 +439,7 @@ class _SkillInjectionMixin:
         """
         if self._registry is None:
             return
-        state = _get_run_state()
+        state = _get_run_state(context, agent)
         pending_names = {s.name for s in state.pending_skills}
         for skill in self._registry.get_triggered_by_tool(tool_name, context, agent):
             if skill.name not in pending_names:
@@ -463,7 +463,7 @@ class _SkillInjectionMixin:
            turn.
 
         The ``manifest_injected`` flag is intentionally *not* cleared — the
-        manifest is a one-time injection for the lifetime of the run.
+        manifest is injected once per agent per run.
 
         Deduplication is name-based so that both :class:`SkillHooks` and
         :class:`RunSkillHooks` calling this method for the same LLM response do
@@ -473,7 +473,7 @@ class _SkillInjectionMixin:
             context: The current run context, or ``None`` if not available.
             agent: The current agent, or ``None`` if not available.
         """
-        state = _get_run_state()
+        state = _get_run_state(context, agent)
         state.injected_this_call.clear()
         if self._registry is None:
             return
@@ -544,15 +544,8 @@ class SkillHooks(AgentHooks, _SkillInjectionMixin):
         context: AgentHookContext[Any],
         agent: Agent[Any],
     ) -> None:
-        """Initialise RunState in the parent task before any on_llm_start gather.
-
-        Called by the SDK in the agent's main task before the first LLM call.
-        Eagerly calling ``_get_run_state()`` here ensures the RunState is stored
-        in the parent context so that child tasks created by ``asyncio.gather``
-        inherit a reference to the same object — making the double-injection guard
-        effective.
-        """
-        _get_run_state()
+        """Create this agent's RunState before its first LLM call."""
+        _get_run_state(context, agent)
 
     async def on_llm_start(
         self,
@@ -608,7 +601,7 @@ class SkillHooks(AgentHooks, _SkillInjectionMixin):
         skills re-inject on the next turn.  Skills with
         ``triggers_after_turn=True`` are appended to ``RunState.pending_skills``
         for injection at the start of the next turn.  The manifest flag is not
-        cleared — the manifest is injected exactly once per run.
+        cleared — the manifest is injected once per agent per run.
         """
         self._do_llm_end(context, agent)
 
@@ -663,14 +656,8 @@ class RunSkillHooks(RunHooks, _SkillInjectionMixin):
         context: AgentHookContext[Any],
         agent: Agent[Any],
     ) -> None:
-        """Initialise RunState in the parent task before any on_llm_start gather.
-
-        Called by the SDK in the run's main task before the first LLM call.
-        Eagerly calling ``_get_run_state()`` here ensures the double-injection
-        guard works correctly when both RunSkillHooks and a per-agent SkillHooks
-        are active simultaneously.
-        """
-        _get_run_state()
+        """Create this agent's RunState before its first LLM call."""
+        _get_run_state(context, agent)
 
     async def on_llm_start(
         self,
@@ -704,6 +691,33 @@ class RunSkillHooks(RunHooks, _SkillInjectionMixin):
         """
         self._do_tool_end(tool.name, context, agent)
 
+    async def on_handoff(
+        self,
+        context: RunContextWrapper[Any],
+        from_agent: Agent[Any],
+        to_agent: Agent[Any],
+    ) -> None:
+        """Move this registry's pending skills to the agent taking over the run.
+
+        Skills queued by a per-agent :class:`SkillHooks` stay with their agent.
+        """
+        if self._registry is None:
+            return
+        source = _get_run_state(context, from_agent)
+        target = _get_run_state(context, to_agent)
+        if source is target:
+            return
+        run_skill_names = set(self._registry.skill_names)
+        queued = {s.name for s in target.pending_skills}
+        kept: list[Skill] = []
+        for skill in source.pending_skills:
+            if skill.name not in run_skill_names:
+                kept.append(skill)
+            elif skill.name not in queued:
+                target.pending_skills.append(skill)
+                queued.add(skill.name)
+        source.pending_skills[:] = kept
+
     async def on_llm_end(
         self,
         context: RunContextWrapper[Any],
@@ -716,7 +730,7 @@ class RunSkillHooks(RunHooks, _SkillInjectionMixin):
         skills re-inject on the next turn.  Skills with
         ``triggers_after_turn=True`` are appended to ``RunState.pending_skills``
         for injection at the start of the next turn.  The manifest flag is not
-        cleared — the manifest is injected exactly once per run.
+        cleared — the manifest is injected once per agent per run.
         """
         self._do_llm_end(context, agent)
 
@@ -737,13 +751,13 @@ def make_invoke_skill_tool(
     can explicitly request skill content beyond what automatic routing provides.
 
     A runaway-invocation guard prevents the model from calling the tool more than
-    *max_calls_per_run* times in a single run.  Set ``max_calls_per_run=0`` to
-    disable the guard.
+    *max_calls_per_run* times per agent in a single run.  Set
+    ``max_calls_per_run=0`` to disable the guard.
 
     Args:
         registry: The :class:`~openai_agents_skills.registry.SkillRegistry` to look
             up skills in.
-        max_calls_per_run: Maximum invocations per run.  Default: 10.
+        max_calls_per_run: Maximum invocations per agent per run.  Default: 10.
 
     Returns:
         A :class:`~agents.FunctionTool` ready to add to an agent.
@@ -767,9 +781,9 @@ def make_invoke_skill_tool(
             skill_name: Name of the skill to invoke.
             args: Optional arguments passed through to the skill.
         """
-        state = _get_run_state()
+        state = _get_run_state(ctx, getattr(ctx, "agent", None))
         if max_calls_per_run > 0 and state.invoke_skill_calls >= max_calls_per_run:
-            return "invoke_skill limit reached for this run"
+            return "invoke_skill limit reached for this agent in this run"
         state.invoke_skill_calls += 1
         try:
             skill = registry.get(skill_name)
