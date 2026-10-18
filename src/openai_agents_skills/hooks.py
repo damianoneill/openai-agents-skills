@@ -707,11 +707,11 @@ class RunSkillHooks(RunHooks, _SkillInjectionMixin):
         target = _get_run_state(context, to_agent)
         if source is target:
             return
-        run_skill_names = set(self._registry.skill_names)
+        run_skill_ids = {id(s) for s in self._registry.all_skills}
         queued = {s.name for s in target.pending_skills}
         kept: list[Skill] = []
         for skill in source.pending_skills:
-            if skill.name not in run_skill_names:
+            if id(skill) not in run_skill_ids:
                 kept.append(skill)
             elif skill.name not in queued:
                 target.pending_skills.append(skill)

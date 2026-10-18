@@ -1147,9 +1147,10 @@ class TestInvokeSkillTool:
         registry = SkillRegistry()
         registry.register(SimpleSkill("s", content="ok"))
         tool = make_invoke_skill_tool(registry, max_calls_per_run=0)
+        run_usage = Usage()
 
         for _ in range(20):
-            result = await _invoke(tool, "s")
+            result = await _invoke(tool, "s", usage=run_usage)
             assert result == "ok"
 
     async def test_invoke_skill_counter_increments_per_call(self) -> None:

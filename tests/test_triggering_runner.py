@@ -173,6 +173,22 @@ async def test_agent_hooks_pending_skill_stays_with_its_agent_on_handoff() -> No
     assert "AGENT-ONLY" not in str(model.inputs[1])
 
 
+async def test_agent_hooks_pending_skill_stays_when_run_registry_has_same_name() -> None:
+    agent_registry = SkillRegistry()
+    agent_registry.register(SimpleSkill("guide", content="AGENT-ONLY", triggers_after_turn=True))
+    run_registry = SkillRegistry()
+    run_registry.register(SimpleSkill("guide", content="RUN-GUIDE"))
+    model = FakeModel([[make_handoff_call("b")], [make_message("done")]])
+    receiver = Agent(name="b", model=model)
+    starter = Agent(
+        name="a", model=model, handoffs=[receiver], hooks=SkillHooks(registry=agent_registry)
+    )
+
+    await Runner.run(starter, "go", hooks=RunSkillHooks(registry=run_registry))
+
+    assert "AGENT-ONLY" not in str(model.inputs[1])
+
+
 async def test_run_hooks_handoff_to_same_agent_keeps_pending_skills() -> None:
     registry = SkillRegistry()
     registry.register(SimpleSkill("guide"))
