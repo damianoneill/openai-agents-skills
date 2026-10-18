@@ -111,7 +111,7 @@ def _deduplicate(skills: list[Skill]) -> list[Skill]:
 
 
 def _build_manifest(skills: list[Skill], max_skills: int | None = None) -> str:
-    """Build a text manifest of available skills for the first-call system prompt.
+    """Build a text manifest of available skills.
 
     Skills whose ``user_invocable`` attribute is ``False`` are excluded from the
     manifest so the model never sees or routes to them directly.  When a skill
@@ -236,8 +236,8 @@ def _log_ungated_always_on_file_skills(registry: SkillRegistry) -> None:
     ``enabled_when`` attribute (the file-skill gating lever); otherwise it is
     reported here.
 
-    Called once per agent per run from :func:`_maybe_build_manifest_blocks`
-    (guarded by ``RunState.manifest_injected``).
+    Called when an agent starts (``on_start`` / ``on_agent_start``), so once per
+    agent per run.
 
     Args:
         registry: The registry whose skills are inspected.
@@ -257,18 +257,19 @@ def _log_ungated_always_on_file_skills(registry: SkillRegistry) -> None:
         )
 
 
-def _maybe_build_manifest_blocks(
+def _build_manifest_blocks(
     state: RunState,
     registry: SkillRegistry | None,
     max_manifest_skills: int | None,
 ) -> list[Any]:
-    """Build and return the manifest block list if this is the first LLM call.
+    """Return a manifest block for skills not yet listed in the current LLM call.
 
-    Mutates ``state.manifest_injected`` to prevent re-injection on subsequent
-    turns.
+    Called for every LLM call: blocks prepended to the input are not kept in the
+    run's history, so the model only sees the manifest in requests that include it.
 
     Args:
-        state: The current run's ``RunState``.
+        state: The current run's ``RunState``.  Its ``listed_this_call`` set is
+            updated with the skills listed here.
         registry: The registry to build the manifest from.  Returns ``[]`` if
             ``None``.
         max_manifest_skills: Optional cap on the number of skills listed.
@@ -276,11 +277,17 @@ def _maybe_build_manifest_blocks(
     Returns:
         A one-element list containing the manifest user message dict, or ``[]``.
     """
-    if state.manifest_injected or registry is None:
+    if registry is None:
         return []
-    state.manifest_injected = True
-    _log_ungated_always_on_file_skills(registry)
-    manifest_text = _build_manifest(registry.all_skills, max_manifest_skills)
+    entries = [
+        s
+        for s in registry.all_skills
+        if getattr(s, "user_invocable", True) and s.name not in state.listed_this_call
+    ]
+    if max_manifest_skills is not None:
+        entries = entries[:max_manifest_skills]
+    state.listed_this_call.update(s.name for s in entries)
+    manifest_text = _build_manifest(entries)
     if not manifest_text:
         return []
     return [{"role": "user", "content": manifest_text}]
@@ -378,6 +385,12 @@ class _SkillInjectionMixin:
         self._on_error = on_skill_error if on_skill_error is not None else _default_on_skill_error
         self._max_manifest_skills = max_manifest_skills
 
+    def _do_agent_start(self, context: RunContextWrapper[Any], agent: Agent[Any]) -> None:
+        """Create this agent's RunState and report ungated always-on file skills."""
+        _get_run_state(context, agent)
+        if self._registry is not None:
+            _log_ungated_always_on_file_skills(self._registry)
+
     async def _do_llm_start(
         self,
         context: RunContextWrapper[Any] | None,
@@ -386,16 +399,15 @@ class _SkillInjectionMixin:
     ) -> None:
         """Core injection logic shared by both hook classes.
 
-        Builds the optional first-call manifest, routes the message to select
-        conditional skills, merges with always-on and direct skills, drains any
-        pending triggered skills, then prepends all resulting prompt blocks to
-        *input_items*.
+        Builds the manifest, routes the message to select conditional skills,
+        merges with always-on and direct skills, drains any pending triggered
+        skills, then prepends all resulting prompt blocks to *input_items*.
         """
         state = _get_run_state(context, agent)
         state.last_context = context
         state.last_agent = agent
 
-        manifest_blocks: list[Any] = _maybe_build_manifest_blocks(
+        manifest_blocks: list[Any] = _build_manifest_blocks(
             state, self._registry, self._max_manifest_skills
         )
 
@@ -456,14 +468,12 @@ class _SkillInjectionMixin:
         Called from ``on_llm_end`` in both hook classes after every LLM
         response.  Performs two actions:
 
-        1. Clears ``RunState.injected_this_call`` so that always-on and routed
-           skills re-inject on the next turn.
+        1. Clears ``RunState.injected_this_call`` and
+           ``RunState.listed_this_call`` so that always-on and routed skills,
+           and the manifest, appear again on the next turn.
         2. Appends skills with ``triggers_after_turn=True`` to
            ``RunState.pending_skills`` so they inject at the start of the next
            turn.
-
-        The ``manifest_injected`` flag is intentionally *not* cleared — the
-        manifest is injected once per agent per run.
 
         Deduplication is name-based so that both :class:`SkillHooks` and
         :class:`RunSkillHooks` calling this method for the same LLM response do
@@ -475,6 +485,7 @@ class _SkillInjectionMixin:
         """
         state = _get_run_state(context, agent)
         state.injected_this_call.clear()
+        state.listed_this_call.clear()
         if self._registry is None:
             return
         pending_names = {s.name for s in state.pending_skills}
@@ -512,8 +523,8 @@ class SkillHooks(AgentHooks, _SkillInjectionMixin):
             Defaults to logging at ``WARNING`` and continuing.  Pass
             ``lambda s, e: None`` to silence all errors, or a re-raise function
             for tests.
-        max_manifest_skills: Optional cap on skills listed in the first-call
-            manifest.  Default: unlimited.
+        max_manifest_skills: Optional cap on skills listed in the manifest.
+            Default: unlimited.
 
     Example::
 
@@ -545,7 +556,7 @@ class SkillHooks(AgentHooks, _SkillInjectionMixin):
         agent: Agent[Any],
     ) -> None:
         """Create this agent's RunState before its first LLM call."""
-        _get_run_state(context, agent)
+        self._do_agent_start(context, agent)
 
     async def on_llm_start(
         self,
@@ -556,8 +567,8 @@ class SkillHooks(AgentHooks, _SkillInjectionMixin):
     ) -> None:
         """Prepend skill prompt blocks to ``input_items`` before the LLM is called.
 
-        On the first call of the run, also prepends a manifest block listing all
-        registered skills if a registry is configured.
+        Also prepends a manifest block listing the registered skills if a
+        registry is configured.
 
         Args:
             context: The run context wrapper provided by the SDK.
@@ -600,8 +611,7 @@ class SkillHooks(AgentHooks, _SkillInjectionMixin):
         Resets ``RunState.injected_this_call`` so that always-on and routed
         skills re-inject on the next turn.  Skills with
         ``triggers_after_turn=True`` are appended to ``RunState.pending_skills``
-        for injection at the start of the next turn.  The manifest flag is not
-        cleared — the manifest is injected once per agent per run.
+        for injection at the start of the next turn.
         """
         self._do_llm_end(context, agent)
 
@@ -628,7 +638,7 @@ class RunSkillHooks(RunHooks, _SkillInjectionMixin):
         registry: Optional :class:`~openai_agents_skills.registry.SkillRegistry`.
         routing_context_turns: Number of recent user messages for routing context.
         on_skill_error: Callback invoked when ``get_prompt_blocks()`` raises.
-        max_manifest_skills: Optional cap on the first-call manifest size.
+        max_manifest_skills: Optional cap on the manifest size.
 
     Example::
 
@@ -657,7 +667,7 @@ class RunSkillHooks(RunHooks, _SkillInjectionMixin):
         agent: Agent[Any],
     ) -> None:
         """Create this agent's RunState before its first LLM call."""
-        _get_run_state(context, agent)
+        self._do_agent_start(context, agent)
 
     async def on_llm_start(
         self,
@@ -729,8 +739,7 @@ class RunSkillHooks(RunHooks, _SkillInjectionMixin):
         Resets ``RunState.injected_this_call`` so that always-on and routed
         skills re-inject on the next turn.  Skills with
         ``triggers_after_turn=True`` are appended to ``RunState.pending_skills``
-        for injection at the start of the next turn.  The manifest flag is not
-        cleared — the manifest is injected once per agent per run.
+        for injection at the start of the next turn.
         """
         self._do_llm_end(context, agent)
 

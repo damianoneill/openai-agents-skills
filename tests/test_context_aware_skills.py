@@ -960,8 +960,8 @@ class TestFileSkillEnabledWhenUnderRunSkillHooks:
 class TestUngatedAlwaysOnFileSkillDebugLog:
     """The one-time debug log fires only for an always-on file skill with no enabled_when.
 
-    Drives the log through the real pipeline (first on_llm_start builds the manifest,
-    which is where the detection runs), so the test also guards that the detection wiring
+    Drives the log through the real pipeline (the detection runs when the agent
+    starts), so the test also guards that the detection wiring
     is reachable — the gap that let a dead-code regression pass silently before.
     """
 
@@ -976,8 +976,8 @@ class TestUngatedAlwaysOnFileSkillDebugLog:
         registry.register(skill)
         hooks = make_run_hooks(registry)
 
-        await hooks.on_agent_start(make_mock_context(), make_mock_agent())
         with caplog.at_level(logging.DEBUG, logger=self._LOGGER):
+            await hooks.on_agent_start(make_mock_context(), make_mock_agent())
             await fire_llm_start(hooks, [], agent=make_mock_agent())
 
         messages = [r.getMessage() for r in caplog.records]
@@ -992,8 +992,8 @@ class TestUngatedAlwaysOnFileSkillDebugLog:
         registry.register(skill)
         hooks = make_run_hooks(registry)
 
-        await hooks.on_agent_start(make_mock_context(), make_mock_agent())
         with caplog.at_level(logging.DEBUG, logger=self._LOGGER):
+            await hooks.on_agent_start(make_mock_context(), make_mock_agent())
             await fire_llm_start(hooks, [], agent=make_mock_agent())
 
         assert not any(self._MESSAGE_PREFIX in r.getMessage() for r in caplog.records)
@@ -1006,8 +1006,8 @@ class TestUngatedAlwaysOnFileSkillDebugLog:
         registry.register(skill)
         hooks = make_run_hooks(registry)
 
-        await hooks.on_agent_start(make_mock_context(), make_mock_agent())
         with caplog.at_level(logging.DEBUG, logger=self._LOGGER):
+            await hooks.on_agent_start(make_mock_context(), make_mock_agent())
             await fire_llm_start(hooks, [], agent=make_mock_agent())
 
         assert not any(self._MESSAGE_PREFIX in r.getMessage() for r in caplog.records)

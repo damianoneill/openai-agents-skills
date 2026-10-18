@@ -2,10 +2,14 @@
 
 The SDK runs each hook in its own asyncio task, so a ContextVar set inside one
 hook is invisible to the next. RunState is therefore stored on the run's
-``Usage`` object, the one object every hook context of a run shares, with one
-RunState per agent: a sub-agent used as a tool shares its parent's ``Usage``,
-and a handoff continues the same run. Callers without a real run context
-(direct hook calls, tests) fall back to a ContextVar.
+``Usage`` object, the one object every hook context of a run shares.
+
+A sub-agent used as a tool runs as a separate run that shares its parent's
+``Usage``, so state is keyed by run as well as by agent. The run is identified
+by the SDK's per-run approvals dict (``RunContextWrapper._approvals``): every
+context the SDK derives for one run passes it along, and each agent-as-tool
+call gets a new one. A handoff continues the same run. Callers without a real
+run context (direct hook calls, tests) fall back to a ContextVar.
 """
 
 from __future__ import annotations
@@ -30,9 +34,9 @@ class RunState:
     See the module docstring for how it is scoped.
 
     Attributes:
-        manifest_injected: True once the available-skills manifest has been
-            prepended for this agent in this run.  Prevents re-injection on
-            subsequent turns.
+        listed_this_call: Names of skills already listed in the manifest for the
+            current LLM call, so a skill registered with both RunSkillHooks and
+            SkillHooks is listed once.  Cleared after each LLM call by on_llm_end.
         injected_this_call: Names of skills already injected during the current
             LLM call.  Shared across RunSkillHooks and SkillHooks via the mutable
             object reference so duplicate injection is prevented even when both
@@ -51,7 +55,7 @@ class RunState:
         last_agent: The Agent from the most recent on_llm_start call.
     """
 
-    manifest_injected: bool = False
+    listed_this_call: set[str] = field(default_factory=set)
     injected_this_call: set[str] = field(default_factory=set)
     invoke_skill_calls: int = 0
     pending_skills: list[Skill] = field(default_factory=list)
@@ -65,7 +69,7 @@ _SLOT_ATTRIBUTE = "_openai_agents_skills_run_state"
 
 
 class _RunStateSlot:
-    """Holds a run's per-agent RunStates on its Usage.
+    """Holds the per-run, per-agent RunStates of every run sharing one Usage.
 
     Copies start empty: the SDK deep-copies Usage for resumable checkpoints, and
     RunState references the agent and context, which must not be deep-copied.
@@ -74,15 +78,16 @@ class _RunStateSlot:
     __slots__ = ("states",)
 
     def __init__(self) -> None:
-        # Keyed by id(agent); the agent is held so its id cannot be reused mid-run.
-        self.states: dict[int, tuple[Any, RunState]] = {}
+        # Entries hold the run key and agent so their ids cannot be reused mid-run.
+        self.states: dict[tuple[int, int], tuple[Any, Any, RunState]] = {}
 
-    def for_agent(self, agent: Any) -> RunState:
-        entry = self.states.get(id(agent))
+    def get(self, run_key: Any, agent: Any) -> RunState:
+        key = (id(run_key), id(agent))
+        entry = self.states.get(key)
         if entry is None:
-            entry = (agent, RunState())
-            self.states[id(agent)] = entry
-        return entry[1]
+            entry = (run_key, agent, RunState())
+            self.states[key] = entry
+        return entry[2]
 
     def __deepcopy__(self, memo: dict[int, Any]) -> _RunStateSlot:
         return _RunStateSlot()
@@ -107,7 +112,7 @@ def _get_run_state(context: Any = None, agent: Any = None) -> RunState:
         if not isinstance(slot, _RunStateSlot):
             slot = _RunStateSlot()
             object.__setattr__(usage, _SLOT_ATTRIBUTE, slot)
-        return slot.for_agent(agent)
+        return slot.get(getattr(context, "_approvals", None), agent)
 
     state = _run_state.get()
     if state is None:

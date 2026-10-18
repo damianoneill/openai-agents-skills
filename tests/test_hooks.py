@@ -16,14 +16,15 @@ import logging
 from typing import Any
 
 import pytest
+from agents import RunContextWrapper
 from agents.tool_context import ToolContext
-from agents.usage import Usage
 from conftest import (
     MockRouter,
     SimpleSkill,
     extract_contents,
     fire_llm_end,
     fire_llm_start,
+    make_tool_call,
 )
 
 from openai_agents_skills import (
@@ -70,18 +71,18 @@ class _ErrorSkill(Skill):
         raise ValueError(f"Skill {self.name!r} intentionally failed")
 
 
-async def _invoke(tool: Any, skill_name: str, args: str = "", usage: Usage | None = None) -> str:
+async def _invoke(
+    tool: Any, skill_name: str, args: str = "", run: RunContextWrapper[Any] | None = None
+) -> str:
     """Helper to invoke a FunctionTool returned by make_invoke_skill_tool.
 
-    Pass the same *usage* to simulate several calls within one run.
+    Pass the same *run* to simulate several calls within one run.
     """
     args_json = json.dumps({"skill_name": skill_name, "args": args})
-    ctx = ToolContext(
-        context=None,
-        usage=usage if usage is not None else Usage(),
-        tool_name="invoke_skill",
-        tool_call_id="test_call_id",
-        tool_arguments=args_json,
+    ctx = ToolContext.from_agent_context(
+        run if run is not None else RunContextWrapper(context=None),
+        "test_call_id",
+        tool_call=make_tool_call("invoke_skill", "test_call_id", args_json),
     )
     return await tool.on_invoke_tool(ctx, args_json)  # type: ignore[arg-type]
 
@@ -767,7 +768,7 @@ class TestManifestInjection:
         ]
         assert len(manifest_items) == 1
 
-    async def test_manifest_not_reinjected_on_second_call(self) -> None:
+    async def test_manifest_injected_on_every_call(self) -> None:
         registry = SkillRegistry()
         registry.register(SimpleSkill("myskill", content="skill content", always_on=True))
 
@@ -784,7 +785,7 @@ class TestManifestInjection:
             for item in items_second
             if isinstance(item.get("content"), str) and "Available Skills" in item["content"]
         )
-        assert manifest_count_second == 0
+        assert manifest_count_second == 1
 
         skill_count_second = sum(
             1 for item in items_second if item.get("content") == "skill content"
@@ -839,17 +840,6 @@ class TestManifestInjection:
         )
         skill_lines = [line for line in manifest_text.split("\n") if line.startswith("- ")]
         assert len(skill_lines) == 2
-
-    async def test_manifest_injected_flag_persists_across_calls(self) -> None:
-        """RunState.manifest_injected is True after the first call and never reset."""
-        registry = SkillRegistry()
-        registry.register(SimpleSkill("skill", always_on=True))
-
-        hooks = SkillHooks(registry=registry)
-        await fire_llm_start(hooks, [])
-
-        state = _get_run_state()
-        assert state.manifest_injected is True
 
     async def test_manifest_prepended_before_skill_blocks(self) -> None:
         """The manifest block must appear before any skill prompt blocks."""
@@ -1124,11 +1114,11 @@ class TestInvokeSkillTool:
         registry = SkillRegistry()
         registry.register(SimpleSkill("s", content="ok"))
         tool = make_invoke_skill_tool(registry, max_calls_per_run=2)
-        run_usage = Usage()
+        run = RunContextWrapper(context=None)
 
-        r1 = await _invoke(tool, "s", usage=run_usage)
-        r2 = await _invoke(tool, "s", usage=run_usage)
-        r3 = await _invoke(tool, "s", usage=run_usage)
+        r1 = await _invoke(tool, "s", run=run)
+        r2 = await _invoke(tool, "s", run=run)
+        r3 = await _invoke(tool, "s", run=run)
 
         assert r1 == "ok"
         assert r2 == "ok"
@@ -1139,36 +1129,31 @@ class TestInvokeSkillTool:
         registry.register(SimpleSkill("s", content="ok"))
         tool = make_invoke_skill_tool(registry, max_calls_per_run=1)
 
-        assert await _invoke(tool, "s", usage=Usage()) == "ok"
-        assert await _invoke(tool, "s", usage=Usage()) == "ok"
+        assert await _invoke(tool, "s", run=RunContextWrapper(context=None)) == "ok"
+        assert await _invoke(tool, "s", run=RunContextWrapper(context=None)) == "ok"
 
     async def test_max_calls_zero_disables_guard(self) -> None:
         """max_calls_per_run=0 means the guard is disabled entirely."""
         registry = SkillRegistry()
         registry.register(SimpleSkill("s", content="ok"))
         tool = make_invoke_skill_tool(registry, max_calls_per_run=0)
-        run_usage = Usage()
+        run = RunContextWrapper(context=None)
 
         for _ in range(20):
-            result = await _invoke(tool, "s", usage=run_usage)
+            result = await _invoke(tool, "s", run=run)
             assert result == "ok"
 
     async def test_invoke_skill_counter_increments_per_call(self) -> None:
         registry = SkillRegistry()
         registry.register(SimpleSkill("s", content="ok"))
         tool = make_invoke_skill_tool(registry, max_calls_per_run=10)
-        run_usage = Usage()
+        run = RunContextWrapper(context=None)
 
-        await _invoke(tool, "s", usage=run_usage)
-        await _invoke(tool, "s", usage=run_usage)
-        await _invoke(tool, "s", usage=run_usage)
+        await _invoke(tool, "s", run=run)
+        await _invoke(tool, "s", run=run)
+        await _invoke(tool, "s", run=run)
 
-        state = _get_run_state(
-            ToolContext(
-                context=None, usage=run_usage, tool_name="t", tool_call_id="c", tool_arguments="{}"
-            )
-        )
-        assert state.invoke_skill_calls == 3
+        assert _get_run_state(run).invoke_skill_calls == 3
 
     async def test_invoke_skill_empty_registry_returns_error(self) -> None:
         registry = SkillRegistry()

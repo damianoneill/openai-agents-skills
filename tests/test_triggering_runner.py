@@ -2,8 +2,8 @@
 
 The SDK runs every hook in its own asyncio task, so run state must be shared
 across tasks for a skill queued in ``on_tool_end`` to reach the next model call.
-It must also stay separate per agent: a sub-agent used as a tool shares the
-parent run's ``Usage``, and a handoff continues the same run.
+It must also stay separate per run and per agent: each agent-as-tool call is its
+own run that shares the parent's ``Usage``, and a handoff continues the same run.
 """
 
 from __future__ import annotations
@@ -14,15 +14,17 @@ from typing import Any
 
 import pytest
 from agents import Agent, RunContextWrapper, Runner, function_tool
+from agents.items import ModelResponse
 from conftest import FakeModel, SimpleSkill, make_handoff_call, make_message, make_tool_call
 
-from openai_agents_skills import RunSkillHooks, SkillHooks, SkillRegistry
+from openai_agents_skills import RunSkillHooks, SkillHooks, SkillRegistry, make_invoke_skill_tool
 from openai_agents_skills._state import _get_run_state, _run_state
 
 GUIDANCE = "TRIGGERED-GUIDANCE"
 
 AFTER_TOOL = SimpleSkill("guide", content=GUIDANCE, triggers_after_tools=["health_check"])
 AFTER_TURN = SimpleSkill("guide", content=GUIDANCE, triggers_after_turn=True)
+ALWAYS = SimpleSkill("always", content=GUIDANCE, always_on=True)
 
 
 @function_tool
@@ -44,6 +46,40 @@ def _manifest_agent(name: str, model: FakeModel, skill_name: str, **kwargs: Any)
 
 def _guidance_per_call(model: FakeModel) -> list[bool]:
     return [GUIDANCE in str(call_input) for call_input in model.inputs]
+
+
+def _listed_per_call(model: FakeModel, skill_name: str) -> list[int]:
+    return [str(call_input).count(f"- {skill_name}:") for call_input in model.inputs]
+
+
+async def _run(agent: Agent, streamed: bool, **kwargs: Any) -> None:
+    if streamed:
+        result = Runner.run_streamed(agent, "go", **kwargs)
+        async for _ in result.stream_events():
+            pass
+    else:
+        await Runner.run(agent, "go", **kwargs)
+
+
+class _FailFirstModel(FakeModel):
+    async def get_response(self, *args: Any, **kwargs: Any) -> ModelResponse:
+        response = await super().get_response(*args, **kwargs)
+        if len(self.inputs) == 1:
+            raise RuntimeError("model unavailable")
+        return response
+
+
+def _ask_child(call_id: str) -> Any:
+    return make_tool_call("ask_child", call_id, '{"input": "hi"}')
+
+
+def _parent_of(child_model: FakeModel, child_skill: SimpleSkill, turns: list[list[Any]]) -> Agent:
+    child = _agent(child_model, child_skill, name="child")
+    return Agent(
+        name="parent",
+        model=FakeModel(turns),
+        tools=[child.as_tool(tool_name="ask_child", tool_description="Ask the child.")],
+    )
 
 
 async def test_triggered_skill_reaches_the_call_after_the_tool() -> None:
@@ -79,6 +115,60 @@ async def test_nested_run_does_not_share_pending_skills() -> None:
 
     assert _guidance_per_call(child_model) == [False, True]
     assert _guidance_per_call(parent_model) == [False, False, True]
+
+
+async def test_same_child_called_twice_starts_fresh_each_time() -> None:
+    child_model = FakeModel([[make_message("one")], [make_message("two")]])
+    parent = _parent_of(
+        child_model, AFTER_TURN, [[_ask_child("p1")], [_ask_child("p2")], [make_message("done")]]
+    )
+
+    await Runner.run(parent, "go")
+
+    assert _guidance_per_call(child_model) == [False, False]
+
+
+async def test_same_child_called_in_parallel_gets_its_skills_in_both_calls() -> None:
+    child_model = FakeModel([[make_message("one")], [make_message("two")]])
+    parent = _parent_of(
+        child_model, ALWAYS, [[_ask_child("p1"), _ask_child("p2")], [make_message("done")]]
+    )
+
+    await Runner.run(parent, "go")
+
+    assert _guidance_per_call(child_model) == [True, True]
+
+
+async def test_same_child_retried_after_a_failed_call_gets_its_skills() -> None:
+    child_model = _FailFirstModel([[make_message("lost")], [make_message("ok")]])
+    parent = _parent_of(
+        child_model, ALWAYS, [[_ask_child("p1")], [_ask_child("p2")], [make_message("done")]]
+    )
+
+    await Runner.run(parent, "go")
+
+    assert _guidance_per_call(child_model) == [True, True]
+
+
+async def test_invoke_skill_limit_counts_every_call_in_one_run() -> None:
+    registry = SkillRegistry()
+    registry.register(SimpleSkill("s", content="ok"))
+    args = '{"skill_name": "s"}'
+    model = FakeModel(
+        [
+            [make_tool_call("invoke_skill", "c1", args)],
+            [make_tool_call("invoke_skill", "c2", args)],
+            [make_message("done")],
+        ]
+    )
+    agent = Agent(
+        name="a", model=model, tools=[make_invoke_skill_tool(registry, max_calls_per_run=1)]
+    )
+
+    await Runner.run(agent, "go")
+
+    assert "limit reached" not in str(model.inputs[1])
+    assert "limit reached" in str(model.inputs[2])
 
 
 async def test_concurrent_runs_do_not_share_pending_skills() -> None:
@@ -124,6 +214,43 @@ async def test_handoff_target_gets_its_own_manifest() -> None:
 
     assert "a-skill" in str(model.inputs[0])
     assert "b-skill" in str(model.inputs[1])
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["run", "run_streamed"])
+async def test_manifest_is_in_every_request(streamed: bool) -> None:
+    model = FakeModel([[make_tool_call("health_check", "c1")], [make_message("done")]])
+    agent = _manifest_agent("a", model, "listed", tools=[health_check])
+
+    await _run(agent, streamed)
+
+    assert _listed_per_call(model, "listed") == [1, 1]
+
+
+@pytest.mark.parametrize(
+    "run_skills", [[], ["run-skill"]], ids=["empty_run_registry", "run_registry"]
+)
+async def test_manifest_lists_agent_and_run_registries(run_skills: list[str]) -> None:
+    model = FakeModel([[make_tool_call("health_check", "c1")], [make_message("done")]])
+    agent = _manifest_agent("a", model, "agent-skill", tools=[health_check])
+    run_registry = SkillRegistry()
+    for name in run_skills:
+        run_registry.register(SimpleSkill(name))
+
+    await Runner.run(agent, "go", hooks=RunSkillHooks(registry=run_registry))
+
+    for name in ["agent-skill", *run_skills]:
+        assert _listed_per_call(model, name) == [1, 1]
+
+
+async def test_manifest_lists_a_shared_skill_once_per_request() -> None:
+    registry = SkillRegistry()
+    registry.register(SimpleSkill("shared"))
+    model = FakeModel([[make_tool_call("health_check", "c1")], [make_message("done")]])
+    agent = Agent(name="a", model=model, tools=[health_check], hooks=SkillHooks(registry=registry))
+
+    await Runner.run(agent, "go", hooks=RunSkillHooks(registry=registry))
+
+    assert _listed_per_call(model, "shared") == [1, 1]
 
 
 @pytest.mark.parametrize(
