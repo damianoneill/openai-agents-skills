@@ -529,11 +529,11 @@ class TestContextAwareDeferredPaths:
         assert received_context[0] is new_ctx
         assert received_context[0] is not old_ctx
 
+    @pytest.mark.parametrize("allow", [False, True], ids=["blocked", "allowed"])
     async def test_context_gated_pending_skill_respects_drain_time_context_in_is_enabled(
-        self,
+        self, allow: bool
     ) -> None:
         # Pending skill is_enabled uses the draining on_llm_start's context
-        # A blocking context prevents injection even though the skill was queued
         injected: list[str] = []
 
         class _GatedPendingSkill(Skill):
@@ -554,16 +554,19 @@ class TestContextAwareDeferredPaths:
         registry.register(_GatedPendingSkill())
         hooks = make_hooks(registry)
         await hooks.on_start(make_mock_context(), make_mock_agent())
-        await fire_tool_end(hooks, "gate_tool")
-        await fire_llm_end(hooks)
+        queue_ctx = MagicMock()
+        queue_ctx.context.allow_skill = True
+        await fire_tool_end(hooks, "gate_tool", context=queue_ctx)
+        await fire_llm_end(hooks, context=queue_ctx)
 
-        blocking_ctx = MagicMock()
-        blocking_ctx.context.allow_skill = False
+        drain_ctx = MagicMock()
+        drain_ctx.context.allow_skill = allow
         items: list[Any] = []
-        await fire_llm_start(hooks, items, context=blocking_ctx)
+        await fire_llm_start(hooks, items, context=drain_ctx)
 
-        assert injected == []
-        assert not any(b.get("content") == "gated-content" for b in items if isinstance(b, dict))
+        assert injected == (["gated-content"] if allow else [])
+        contents = [b.get("content") for b in items if isinstance(b, dict)]
+        assert ("gated-content" in contents) is allow
 
     async def test_run_skill_hooks_pending_skill_receives_context_from_next_llm_start(self) -> None:
         # Same deferred-context guarantee holds for RunSkillHooks
