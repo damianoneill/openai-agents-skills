@@ -212,9 +212,11 @@ async def test_cancelled_child_call_releases_its_context_and_state() -> None:
     hooks, parent = _recorded_child_and_parent(_HangingModel(started))
 
     task = asyncio.create_task(Runner.run(parent, "go"))
-    await started.wait()
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
     del task
     # Cancelled SDK tasks drop their references over a few event-loop turns.
     for _ in range(20):
@@ -225,6 +227,29 @@ async def test_cancelled_child_call_releases_its_context_and_state() -> None:
 
     assert len(hooks.refs) == 2
     assert [ref() for ref in hooks.refs] == [None, None]
+
+
+class _ContextKeepingSkill(SimpleSkill):
+    context: Any = None
+
+    async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+        self.context = context
+        return await super().get_prompt_blocks(context, agent, args)
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["run", "run_streamed"])
+async def test_run_is_collected_when_a_skill_keeps_its_context(streamed: bool) -> None:
+    skill = _ContextKeepingSkill("keeper", always_on=True)
+    registry = SkillRegistry()
+    registry.register(skill)
+    agent = Agent(name="a", model=FakeModel(), hooks=SkillHooks(registry=registry))
+
+    await _run(agent, streamed)
+    context_ref = weakref.ref(skill.context)
+    del agent, registry, skill
+    gc.collect()
+
+    assert context_ref() is None
 
 
 @function_tool(needs_approval=True)

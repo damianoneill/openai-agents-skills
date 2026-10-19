@@ -70,7 +70,7 @@ class _RunStateSlot:
     survives the copy, because a resumed run can get a new approvals dict.
     """
 
-    __slots__ = ("states", "released")
+    __slots__ = ("states", "released", "__weakref__")
 
     def __init__(self) -> None:
         # Entries hold the run key and agent so their ids cannot be reused mid-run.
@@ -90,7 +90,9 @@ class _RunStateSlot:
         run_id = id(run_key)
         if run_id not in self.released:
             self.released.add(run_id)
-            weakref.finalize(owner, self._release, run_id)
+            # The finalizer registry outlives everything, so it must not hold the slot:
+            # a skill keeping its context would otherwise keep the whole run alive.
+            weakref.finalize(owner, _release_if_alive, weakref.ref(self), run_id)
 
     def _release(self, run_id: int) -> None:
         self.released.discard(run_id)
@@ -99,6 +101,12 @@ class _RunStateSlot:
 
     def __deepcopy__(self, memo: dict[int, Any]) -> _RunStateSlot:
         return _RunStateSlot()
+
+
+def _release_if_alive(slot_ref: weakref.ref[_RunStateSlot], run_id: int) -> None:
+    slot = slot_ref()
+    if slot is not None:
+        slot._release(run_id)
 
 
 def _get_run_state(context: Any = None, agent: Any = None) -> RunState:
