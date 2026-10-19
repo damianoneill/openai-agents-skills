@@ -63,8 +63,10 @@ _SLOT_ATTRIBUTE = "_openai_agents_skills_run_state"
 class _RunStateSlot:
     """Holds the per-run, per-agent RunStates of every run sharing one Usage.
 
-    Copies start empty: the SDK deep-copies Usage for resumable checkpoints, and
-    RunState references the agent and context, which must not be deep-copied.
+    Copies start empty because entries hold agents, which must not be deep-copied.
+    So queued skills and invoke_skill counts do not survive the SDK copying or
+    serialising Usage to resume a run. Keeping them would also need a run key that
+    survives the copy, because a resumed run can get a new approvals dict.
     """
 
     __slots__ = ("states", "released")
@@ -130,7 +132,9 @@ def _release_run_state_with(context: Any) -> None:
     """Drop the current run's states once *context* is garbage collected.
 
     Pass only the context the SDK gives ``on_llm_start``: it is the run's own
-    context, so it lives until the run ends, fails or is cancelled.
+    context, so it lives until the run ends, fails or is cancelled. A run that
+    uses ``invoke_skill`` without skill hooks never gets here, so its state stays
+    until the ``Usage`` is freed.
     """
     usage = getattr(context, "usage", None)
     slot = getattr(usage, _SLOT_ATTRIBUTE, None)

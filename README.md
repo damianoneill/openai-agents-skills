@@ -480,7 +480,18 @@ registry = SkillRegistry(router=MyCustomRouter())
 
 ## Compatibility
 
-Tested weekly against the latest OpenAI Agents SDK to ensure compatibility.
+Requires `openai-agents` 0.8.2 or later. Tested weekly against the latest OpenAI Agents SDK
+to ensure compatibility.
+
+### Resuming a saved run
+
+The library keeps its own state for each run: skills queued by `triggers_after_tools` or
+`triggers_after_turn`, and the `invoke_skill` call count used by `max_calls_per_run`. This
+state is not saved with the SDK's run state. When a run is resumed from saved state, for
+example after a tool approval, queued skills can be skipped and the `invoke_skill` count
+starts again from zero. A resume from serialised (JSON) state always loses this state, and
+some SDK versions also lose it on an in-memory resume. The SDK's own history, approvals and
+token usage are not affected.
 
 ---
 

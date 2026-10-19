@@ -224,7 +224,7 @@ def _resolve_candidates(
 
 
 def _log_ungated_always_on_file_skills(registry: SkillRegistry) -> None:
-    """Emit a one-time debug log for always-on file skills that have no gate.
+    """Emit a debug log for always-on file skills that have no gate.
 
     A :class:`~openai_agents_skills.loader.FileSkill` with ``always_on=True`` and
     no ``enabled_when`` predicate injects on every LLM call for every agent.  Under
@@ -237,8 +237,7 @@ def _log_ungated_always_on_file_skills(registry: SkillRegistry) -> None:
     ``enabled_when`` attribute (the file-skill gating lever); otherwise it is
     reported here.
 
-    Called when an agent starts (``on_start`` / ``on_agent_start``), so once per
-    agent per run.
+    Called each time an agent starts (``on_start`` / ``on_agent_start``).
 
     Args:
         registry: The registry whose skills are inspected.
