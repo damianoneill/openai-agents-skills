@@ -394,7 +394,7 @@ class TestContextAwareIsEnabled:
 
 
 # ---------------------------------------------------------------------------
-# 5.  Deferred (pending) paths - context forwarded via state.last_context
+# 5.  Deferred (pending) paths - context from the draining on_llm_start
 # ---------------------------------------------------------------------------
 
 
@@ -497,8 +497,8 @@ class TestContextAwareDeferredPaths:
         assert len(received_context) >= 1
         assert received_context[-1] is turn2_ctx
 
-    async def test_drain_pending_uses_state_last_context_not_tool_end_context(self) -> None:
-        # Pending drain uses state.last_context, not context when tool fired
+    async def test_drain_pending_uses_llm_start_context_not_tool_end_context(self) -> None:
+        # Pending drain uses the draining on_llm_start's context, not the tool_end context
         received_context: list[Any] = []
 
         class _ToolTriggeredSkill(Skill):
@@ -532,7 +532,7 @@ class TestContextAwareDeferredPaths:
     async def test_context_gated_pending_skill_respects_drain_time_context_in_is_enabled(
         self,
     ) -> None:
-        # Pending skill is_enabled uses state.last_context at drain time
+        # Pending skill is_enabled uses the draining on_llm_start's context
         # A blocking context prevents injection even though the skill was queued
         injected: list[str] = []
 

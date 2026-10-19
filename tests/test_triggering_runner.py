@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import gc
+import weakref
 from typing import Any
 
 import pytest
@@ -148,6 +150,42 @@ async def test_same_child_retried_after_a_failed_call_gets_its_skills() -> None:
     await Runner.run(parent, "go")
 
     assert _guidance_per_call(child_model) == [True, True]
+
+
+class _ContextRecordingHooks(SkillHooks):
+    def __init__(self, refs: list[weakref.ref[Any]], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._refs = refs
+
+    async def on_llm_start(
+        self, context: Any, agent: Any, system_prompt: Any, input_items: list[Any]
+    ) -> None:
+        self._refs.append(weakref.ref(context))
+        await super().on_llm_start(context, agent, system_prompt, input_items)
+
+
+@pytest.mark.parametrize("model_cls", [FakeModel, _FailFirstModel], ids=["completed", "failed"])
+async def test_finished_child_call_releases_its_context(model_cls: type[FakeModel]) -> None:
+    refs: list[weakref.ref[Any]] = []
+    registry = SkillRegistry()
+    registry.register(ALWAYS)
+    child = Agent(
+        name="child",
+        model=model_cls([[make_message("one")]]),
+        hooks=_ContextRecordingHooks(refs, registry=registry),
+    )
+    parent = Agent(
+        name="parent",
+        model=FakeModel([[_ask_child("p1")], [make_message("done")]]),
+        tools=[child.as_tool(tool_name="ask_child", tool_description="Ask the child.")],
+    )
+
+    result = await Runner.run(parent, "go")
+    gc.collect()
+
+    assert result.final_output == "done"
+    assert len(refs) == 1
+    assert refs[0]() is None
 
 
 async def test_invoke_skill_limit_counts_every_call_in_one_run() -> None:

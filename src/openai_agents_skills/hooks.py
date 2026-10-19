@@ -297,6 +297,8 @@ def _build_manifest_blocks(
 async def _drain_pending(
     state: RunState,
     on_error: Callable[[Skill, Exception], None],
+    context: RunContextWrapper[Any] | None,
+    agent: Agent[Any] | None,
 ) -> list[Any]:
     """Drain skills queued in ``RunState.pending_skills`` and return their blocks.
 
@@ -314,15 +316,14 @@ async def _drain_pending(
     Args:
         state: The current run's :class:`~openai_agents_skills._state.RunState`.
         on_error: Error handler called when ``get_prompt_blocks`` raises.
+        context: The context of the ``on_llm_start`` call draining the queue.
+        agent: The agent of the ``on_llm_start`` call draining the queue.
 
     Returns:
         Flat list of prompt blocks from all drained pending skills, in queue order.
     """
     if not state.pending_skills:
         return []
-
-    context = state.last_context
-    agent = state.last_agent
 
     # Claim each skill synchronously (no await) so that a concurrent caller
     # finds an empty pending list and an already-populated injected_this_call.
@@ -405,8 +406,6 @@ class _SkillInjectionMixin:
         skills, then prepends all resulting prompt blocks to *input_items*.
         """
         state = _get_run_state(context, agent)
-        state.last_context = context
-        state.last_agent = agent
 
         manifest_blocks: list[Any] = _build_manifest_blocks(
             state, self._registry, self._max_manifest_skills
@@ -424,7 +423,7 @@ class _SkillInjectionMixin:
         )
 
         # Drain skills queued by tool-result or post-turn triggers.
-        pending_blocks = await _drain_pending(state, self._on_error)
+        pending_blocks = await _drain_pending(state, self._on_error, context, agent)
 
         input_items[0:0] = manifest_blocks + skill_blocks + pending_blocks
 
