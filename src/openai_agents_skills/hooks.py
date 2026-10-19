@@ -53,7 +53,7 @@ from agents import (
 )
 from agents.tool_context import ToolContext
 
-from ._state import RunState, _get_run_state
+from ._state import RunState, _get_run_state, _release_run_state_with
 from .loader import FileSkill
 from .registry import SkillRegistry
 from .skills import Skill
@@ -406,6 +406,7 @@ class _SkillInjectionMixin:
         skills, then prepends all resulting prompt blocks to *input_items*.
         """
         state = _get_run_state(context, agent)
+        _release_run_state_with(context)
 
         manifest_blocks: list[Any] = _build_manifest_blocks(
             state, self._registry, self._max_manifest_skills

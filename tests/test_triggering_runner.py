@@ -152,40 +152,94 @@ async def test_same_child_retried_after_a_failed_call_gets_its_skills() -> None:
     assert _guidance_per_call(child_model) == [True, True]
 
 
-class _ContextRecordingHooks(SkillHooks):
-    def __init__(self, refs: list[weakref.ref[Any]], **kwargs: Any) -> None:
+class _RunRecordingHooks(SkillHooks):
+    """Keeps the run's Usage alive and weak references to its context and run state."""
+
+    def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._refs = refs
+        self.refs: list[weakref.ref[Any]] = []
+        self.usages: list[Any] = []
 
     async def on_llm_start(
         self, context: Any, agent: Any, system_prompt: Any, input_items: list[Any]
     ) -> None:
-        self._refs.append(weakref.ref(context))
         await super().on_llm_start(context, agent, system_prompt, input_items)
+        self.refs += [weakref.ref(context), weakref.ref(_get_run_state(context, agent))]
+        self.usages.append(context.usage)
 
 
-@pytest.mark.parametrize("model_cls", [FakeModel, _FailFirstModel], ids=["completed", "failed"])
-async def test_finished_child_call_releases_its_context(model_cls: type[FakeModel]) -> None:
-    refs: list[weakref.ref[Any]] = []
+class _HangingModel(FakeModel):
+    def __init__(self, started: asyncio.Event) -> None:
+        super().__init__()
+        self._started = started
+
+    async def get_response(self, *args: Any, **kwargs: Any) -> ModelResponse:
+        self._started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+def _recorded_child_and_parent(child_model: FakeModel) -> tuple[_RunRecordingHooks, Agent]:
     registry = SkillRegistry()
     registry.register(ALWAYS)
-    child = Agent(
-        name="child",
-        model=model_cls([[make_message("one")]]),
-        hooks=_ContextRecordingHooks(refs, registry=registry),
-    )
+    hooks = _RunRecordingHooks(registry=registry)
+    child = Agent(name="child", model=child_model, hooks=hooks)
     parent = Agent(
         name="parent",
         model=FakeModel([[_ask_child("p1")], [make_message("done")]]),
         tools=[child.as_tool(tool_name="ask_child", tool_description="Ask the child.")],
     )
+    return hooks, parent
+
+
+@pytest.mark.parametrize("model_cls", [FakeModel, _FailFirstModel], ids=["completed", "failed"])
+async def test_finished_child_call_releases_its_context_and_state(
+    model_cls: type[FakeModel],
+) -> None:
+    hooks, parent = _recorded_child_and_parent(model_cls([[make_message("one")]]))
 
     result = await Runner.run(parent, "go")
     gc.collect()
 
     assert result.final_output == "done"
-    assert len(refs) == 1
-    assert refs[0]() is None
+    assert len(hooks.refs) == 2
+    assert [ref() for ref in hooks.refs] == [None, None]
+
+
+async def test_cancelled_child_call_releases_its_context_and_state() -> None:
+    started = asyncio.Event()
+    hooks, parent = _recorded_child_and_parent(_HangingModel(started))
+
+    task = asyncio.create_task(Runner.run(parent, "go"))
+    await started.wait()
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    del task
+    for _ in range(3):
+        await asyncio.sleep(0)  # let the cancelled tasks' done callbacks drop their references
+    gc.collect()
+
+    assert len(hooks.refs) == 2
+    assert [ref() for ref in hooks.refs] == [None, None]
+
+
+@function_tool(needs_approval=True)
+def guarded() -> str:
+    return "{}"
+
+
+async def test_run_paused_for_approval_keeps_its_state() -> None:
+    registry = SkillRegistry()
+    registry.register(ALWAYS)
+    hooks = _RunRecordingHooks(registry=registry)
+    model = FakeModel([[make_tool_call("guarded", "c1")]])
+    agent = Agent(name="a", model=model, tools=[guarded], hooks=hooks)
+
+    result = await Runner.run(agent, "go")
+    gc.collect()
+
+    assert result.interruptions
+    assert hooks.refs[1]() is not None
 
 
 async def test_invoke_skill_limit_counts_every_call_in_one_run() -> None:

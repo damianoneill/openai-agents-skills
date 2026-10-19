@@ -14,6 +14,7 @@ run context (direct hook calls, tests) fall back to a ContextVar.
 
 from __future__ import annotations
 
+import weakref
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -66,11 +67,12 @@ class _RunStateSlot:
     RunState references the agent and context, which must not be deep-copied.
     """
 
-    __slots__ = ("states",)
+    __slots__ = ("states", "released")
 
     def __init__(self) -> None:
         # Entries hold the run key and agent so their ids cannot be reused mid-run.
         self.states: dict[tuple[int, int], tuple[Any, Any, RunState]] = {}
+        self.released: set[int] = set()
 
     def get(self, run_key: Any, agent: Any) -> RunState:
         key = (id(run_key), id(agent))
@@ -79,6 +81,18 @@ class _RunStateSlot:
             entry = (run_key, agent, RunState())
             self.states[key] = entry
         return entry[2]
+
+    def release_with(self, owner: Any, run_key: Any) -> None:
+        """Drop *run_key*'s states once *owner* is garbage collected."""
+        run_id = id(run_key)
+        if run_id not in self.released:
+            self.released.add(run_id)
+            weakref.finalize(owner, self._release, run_id)
+
+    def _release(self, run_id: int) -> None:
+        self.released.discard(run_id)
+        for key in [key for key in self.states if key[0] == run_id]:
+            del self.states[key]
 
     def __deepcopy__(self, memo: dict[int, Any]) -> _RunStateSlot:
         return _RunStateSlot()
@@ -110,3 +124,15 @@ def _get_run_state(context: Any = None, agent: Any = None) -> RunState:
         state = RunState()
         _run_state.set(state)
     return state
+
+
+def _release_run_state_with(context: Any) -> None:
+    """Drop the current run's states once *context* is garbage collected.
+
+    Pass only the context the SDK gives ``on_llm_start``: it is the run's own
+    context, so it lives until the run ends, fails or is cancelled.
+    """
+    usage = getattr(context, "usage", None)
+    slot = getattr(usage, _SLOT_ATTRIBUTE, None)
+    if isinstance(usage, Usage) and isinstance(slot, _RunStateSlot):
+        slot.release_with(context, getattr(context, "_approvals", None))
