@@ -46,8 +46,9 @@ jobs:
           uv sync --all-extras
           uv pip install openai-agents --upgrade
 
+      # --no-sync stops uv run from reinstalling the locked SDK.
       - name: Run tests
-        run: uv run pytest --cov=src/openai_agents_skills --cov-fail-under=90
+        run: uv run --no-sync pytest --cov=src/openai_agents_skills --cov-fail-under=90
 
       - name: Update last tested version
         if: success()
