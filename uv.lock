@@ -982,7 +982,7 @@ dev = [
 requires-dist = [
     { name = "commitizen", marker = "extra == 'dev'", specifier = ">=3.0.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.19.0" },
-    { name = "openai-agents", specifier = ">=0.1.0" },
+    { name = "openai-agents", specifier = ">=0.8.2" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },

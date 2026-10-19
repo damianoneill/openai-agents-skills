@@ -171,6 +171,28 @@ async def test_invoke_skill_limit_counts_every_call_in_one_run() -> None:
     assert "limit reached" in str(model.inputs[2])
 
 
+@pytest.mark.parametrize("streamed", [False, True], ids=["run", "run_streamed"])
+async def test_invoke_skill_limit_is_per_agent_across_a_handoff(streamed: bool) -> None:
+    registry = SkillRegistry()
+    registry.register(SimpleSkill("s", content="SKILL-BODY"))
+    tool = make_invoke_skill_tool(registry, max_calls_per_run=1)
+    args = '{"skill_name": "s"}'
+    model = FakeModel(
+        [
+            [make_tool_call("invoke_skill", "c1", args)],
+            [make_handoff_call("b")],
+            [make_tool_call("invoke_skill", "c2", args)],
+            [make_message("done")],
+        ]
+    )
+    receiver = Agent(name="b", model=model, tools=[tool])
+    starter = Agent(name="a", model=model, tools=[tool], handoffs=[receiver])
+
+    await _run(starter, streamed)
+
+    assert str(model.inputs[3]).count("SKILL-BODY") == 2
+
+
 async def test_concurrent_runs_do_not_share_pending_skills() -> None:
     triggered = FakeModel([[make_tool_call("health_check", "c1")], [make_message("done")]])
     plain = FakeModel([[make_message("a")], [make_message("b")]])

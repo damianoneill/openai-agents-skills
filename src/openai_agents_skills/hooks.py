@@ -51,6 +51,7 @@ from agents import (
     RunHooks,
     function_tool,
 )
+from agents.tool_context import ToolContext
 
 from ._state import RunState, _get_run_state
 from .loader import FileSkill
@@ -783,14 +784,14 @@ def make_invoke_skill_tool(
     """
 
     @function_tool(strict_mode=False)
-    async def invoke_skill(ctx: RunContextWrapper[Any], skill_name: str, args: str = "") -> str:
+    async def invoke_skill(ctx: ToolContext[Any], skill_name: str, args: str = "") -> str:
         """Invoke a skill by name and return its prompt content as text.
 
         Args:
             skill_name: Name of the skill to invoke.
             args: Optional arguments passed through to the skill.
         """
-        state = _get_run_state(ctx, getattr(ctx, "agent", None))
+        state = _get_run_state(ctx, ctx.agent)
         if max_calls_per_run > 0 and state.invoke_skill_calls >= max_calls_per_run:
             return "invoke_skill limit reached for this agent in this run"
         state.invoke_skill_calls += 1
