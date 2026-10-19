@@ -20,7 +20,7 @@ from agents.items import ModelResponse
 from conftest import FakeModel, SimpleSkill, make_handoff_call, make_message, make_tool_call
 
 from openai_agents_skills import RunSkillHooks, SkillHooks, SkillRegistry, make_invoke_skill_tool
-from openai_agents_skills._state import _get_run_state, _run_state
+from openai_agents_skills._state import _SLOT_ATTRIBUTE, _get_run_state, _run_state
 
 GUIDANCE = "TRIGGERED-GUIDANCE"
 
@@ -240,6 +240,33 @@ async def test_run_paused_for_approval_keeps_its_state() -> None:
 
     assert result.interruptions
     assert hooks.refs[1]() is not None
+
+
+def _failing_instructions(context: Any, agent: Any) -> str:
+    raise RuntimeError("instructions unavailable")
+
+
+async def test_child_call_failing_before_its_model_call_leaves_no_state() -> None:
+    registry = SkillRegistry()
+    registry.register(ALWAYS)
+    child = Agent(
+        name="child",
+        model=FakeModel(),
+        instructions=_failing_instructions,
+        hooks=SkillHooks(registry=registry),
+    )
+    parent = Agent(
+        name="parent",
+        model=FakeModel([[_ask_child("p1")], [make_message("done")]]),
+        tools=[child.as_tool(tool_name="ask_child", tool_description="Ask the child.")],
+    )
+
+    result = await Runner.run(parent, "go")
+    gc.collect()
+
+    assert result.final_output == "done"
+    slot = getattr(result.context_wrapper.usage, _SLOT_ATTRIBUTE, None)
+    assert slot is None or slot.states == {}
 
 
 async def test_invoke_skill_limit_counts_every_call_in_one_run() -> None:

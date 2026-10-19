@@ -34,7 +34,7 @@ from openai_agents_skills import (
     SkillRegistry,
     make_invoke_skill_tool,
 )
-from openai_agents_skills._state import RunState, _get_run_state, _run_state
+from openai_agents_skills._state import _get_run_state
 from openai_agents_skills.hooks import _deduplicate, _extract_routing_context
 
 # ---------------------------------------------------------------------------
@@ -945,18 +945,6 @@ class TestRunSkillHooks:
         await fire_llm_start(hooks, items)
 
         assert any(item.get("content") == "good content" for item in items)
-
-    async def test_on_agent_start_initialises_run_state(self) -> None:
-        """on_agent_start must prime the RunState so the guard works correctly."""
-        hooks = RunSkillHooks(skills=[SimpleSkill("s", always_on=True)])
-
-        await hooks.on_agent_start(
-            context=None,  # type: ignore[arg-type]
-            agent=None,  # type: ignore[arg-type]
-        )
-
-        state = _run_state.get()
-        assert isinstance(state, RunState)
 
 
 # ---------------------------------------------------------------------------

@@ -388,8 +388,7 @@ class _SkillInjectionMixin:
         self._max_manifest_skills = max_manifest_skills
 
     def _do_agent_start(self, context: RunContextWrapper[Any], agent: Agent[Any]) -> None:
-        """Create this agent's RunState and report ungated always-on file skills."""
-        _get_run_state(context, agent)
+        """Report ungated always-on file skills."""
         if self._registry is not None:
             _log_ungated_always_on_file_skills(self._registry)
 
