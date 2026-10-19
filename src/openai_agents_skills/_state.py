@@ -8,8 +8,9 @@ A sub-agent used as a tool runs as a separate run that shares its parent's
 ``Usage``, so state is keyed by run as well as by agent. The run is identified
 by the SDK's per-run approvals dict (``RunContextWrapper._approvals``): every
 context the SDK derives for one run passes it along, and each agent-as-tool
-call gets a new one. A handoff continues the same run. Callers without a real
-run context (direct hook calls, tests) fall back to a ContextVar.
+call gets a new one. A handoff continues the same run. Runs given the same
+context wrapper share its approvals dict, so they share state too. Callers
+without a real run context (direct hook calls, tests) fall back to a ContextVar.
 """
 
 from __future__ import annotations

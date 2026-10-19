@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import gc
+import threading
 import weakref
 from typing import Any
 
@@ -215,9 +216,12 @@ async def test_cancelled_child_call_releases_its_context_and_state() -> None:
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
     del task
-    for _ in range(3):
-        await asyncio.sleep(0)  # let the cancelled tasks' done callbacks drop their references
-    gc.collect()
+    # Cancelled SDK tasks drop their references over a few event-loop turns.
+    for _ in range(20):
+        await asyncio.sleep(0)
+        gc.collect()
+        if all(ref() is None for ref in hooks.refs):
+            break
 
     assert len(hooks.refs) == 2
     assert [ref() for ref in hooks.refs] == [None, None]
@@ -394,6 +398,18 @@ async def test_manifest_lists_a_shared_skill_once_per_request() -> None:
     assert _listed_per_call(model, "shared") == [1, 1]
 
 
+async def test_manifest_cap_holds_when_both_hooks_share_a_registry() -> None:
+    registry = SkillRegistry()
+    for name in ["s1", "s2", "s3"]:
+        registry.register(SimpleSkill(name))
+    model = FakeModel([[make_message("done")]])
+    agent = Agent(name="a", model=model, hooks=SkillHooks(registry=registry, max_manifest_skills=2))
+
+    await Runner.run(agent, "go", hooks=RunSkillHooks(registry=registry, max_manifest_skills=2))
+
+    assert [_listed_per_call(model, name) for name in ["s1", "s2", "s3"]] == [[1], [1], [0]]
+
+
 @pytest.mark.parametrize(
     ("skill", "first_turn"),
     [
@@ -478,9 +494,11 @@ async def test_run_does_not_leave_state_in_the_caller_context() -> None:
 def test_copied_usage_starts_with_fresh_state() -> None:
     """The SDK deep-copies Usage for resumable checkpoints; run state must not follow."""
     context = RunContextWrapper(context=None)
-    _get_run_state(context).pending_skills.append(SimpleSkill("queued"))
+    agent = Agent(name="a")
+    agent.client_lock = threading.RLock()  # type: ignore[attr-defined]  # like a real model client
+    _get_run_state(context, agent).pending_skills.append(SimpleSkill("queued"))
 
-    copied = RunContextWrapper(context=None, usage=copy.deepcopy(context.usage))
+    copied = copy.deepcopy(context.usage)
 
-    assert _get_run_state(copied).pending_skills == []
-    assert [s.name for s in _get_run_state(context).pending_skills] == ["queued"]
+    assert getattr(copied, _SLOT_ATTRIBUTE).states == {}
+    assert [s.name for s in _get_run_state(context, agent).pending_skills] == ["queued"]

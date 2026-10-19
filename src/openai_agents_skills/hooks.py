@@ -279,13 +279,10 @@ def _build_manifest_blocks(
     """
     if registry is None:
         return []
-    entries = [
-        s
-        for s in registry.all_skills
-        if getattr(s, "user_invocable", True) and s.name not in state.listed_this_call
-    ]
+    entries = [s for s in registry.all_skills if getattr(s, "user_invocable", True)]
     if max_manifest_skills is not None:
         entries = entries[:max_manifest_skills]
+    entries = [s for s in entries if s.name not in state.listed_this_call]
     state.listed_this_call.update(s.name for s in entries)
     manifest_text = _build_manifest(entries)
     if not manifest_text:
@@ -386,7 +383,7 @@ class _SkillInjectionMixin:
         self._on_error = on_skill_error if on_skill_error is not None else _default_on_skill_error
         self._max_manifest_skills = max_manifest_skills
 
-    def _do_agent_start(self, context: RunContextWrapper[Any], agent: Agent[Any]) -> None:
+    def _do_agent_start(self) -> None:
         """Report ungated always-on file skills."""
         if self._registry is not None:
             _log_ungated_always_on_file_skills(self._registry)
@@ -554,8 +551,8 @@ class SkillHooks(AgentHooks, _SkillInjectionMixin):
         context: AgentHookContext[Any],
         agent: Agent[Any],
     ) -> None:
-        """Create this agent's RunState before its first LLM call."""
-        self._do_agent_start(context, agent)
+        """Report ungated always-on file skills."""
+        self._do_agent_start()
 
     async def on_llm_start(
         self,
@@ -665,8 +662,8 @@ class RunSkillHooks(RunHooks, _SkillInjectionMixin):
         context: AgentHookContext[Any],
         agent: Agent[Any],
     ) -> None:
-        """Create this agent's RunState before its first LLM call."""
-        self._do_agent_start(context, agent)
+        """Report ungated always-on file skills."""
+        self._do_agent_start()
 
     async def on_llm_start(
         self,

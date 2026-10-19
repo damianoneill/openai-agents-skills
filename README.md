@@ -493,6 +493,14 @@ starts again from zero. A resume from serialised (JSON) state always loses this 
 some SDK versions also lose it on an in-memory resume. The SDK's own history, approvals and
 token usage are not affected.
 
+### Starting a run from inside a tool
+
+Each run the SDK starts gets its own skill state, including each `Agent.as_tool` call. If a
+tool starts another run with `Runner.run`, pass `context=ctx.context` (or no context), not
+the tool's own `ctx`. Runs given the same context wrapper share the SDK's approvals and
+this library's skill state, so queued skills and `invoke_skill` counts would mix between
+them. For the same reason, do not reuse one `RunContextWrapper` across runs.
+
 ---
 
 ## License
