@@ -6,6 +6,16 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from agents.items import ModelResponse
+from agents.models.interface import Model
+from agents.usage import Usage
+from openai.types.responses import (
+    Response,
+    ResponseCompletedEvent,
+    ResponseFunctionToolCall,
+    ResponseOutputMessage,
+    ResponseOutputText,
+)
 
 from openai_agents_skills import Skill, SkillHooks, SkillRegistry
 from openai_agents_skills._state import _run_state
@@ -108,6 +118,102 @@ def make_mock_response() -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Recording fake model for real Runner executions
+# ---------------------------------------------------------------------------
+
+
+def make_message(text: str) -> ResponseOutputMessage:
+    return ResponseOutputMessage(
+        id="m",
+        role="assistant",
+        status="completed",
+        type="message",
+        content=[ResponseOutputText(text=text, type="output_text", annotations=[])],
+    )
+
+
+def make_handoff_call(agent_name: str) -> ResponseFunctionToolCall:
+    return ResponseFunctionToolCall(
+        id="h",
+        call_id="c",
+        name=f"transfer_to_{agent_name}",
+        arguments="{}",
+        type="function_call",
+    )
+
+
+def make_tool_call(name: str, call_id: str, arguments: str = "{}") -> ResponseFunctionToolCall:
+    return ResponseFunctionToolCall(
+        id=call_id, call_id=call_id, name=name, arguments=arguments, type="function_call"
+    )
+
+
+def _response(output: list[Any]) -> Response:
+    return Response(
+        id="r",
+        created_at=0.0,
+        model="fake",
+        object="response",
+        output=output,
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        tools=[],
+    )
+
+
+class FakeModel(Model):
+    """Records the ``input`` seen on every model call and replays scripted turns."""
+
+    def __init__(self, turns: list[list[Any]] | None = None) -> None:
+        self._turns = turns
+        self._i = 0
+        self.inputs: list[Any] = []
+
+    def _next(self) -> list[Any]:
+        if self._turns is None:
+            return [make_message("done")]
+        out = self._turns[self._i]
+        self._i += 1
+        return out
+
+    async def get_response(
+        self,
+        system_instructions: Any,
+        input: Any,
+        model_settings: Any,
+        tools: Any,
+        output_schema: Any,
+        handoffs: Any,
+        tracing: Any,
+        *,
+        previous_response_id: Any = None,
+        conversation_id: Any = None,
+        prompt: Any = None,
+    ) -> ModelResponse:
+        self.inputs.append(input)
+        return ModelResponse(output=self._next(), usage=Usage(), response_id=None)
+
+    async def stream_response(
+        self,
+        system_instructions: Any,
+        input: Any,
+        model_settings: Any,
+        tools: Any,
+        output_schema: Any,
+        handoffs: Any,
+        tracing: Any,
+        *,
+        previous_response_id: Any = None,
+        conversation_id: Any = None,
+        prompt: Any = None,
+    ) -> Any:
+        self.inputs.append(input)
+        yield ResponseCompletedEvent(
+            type="response.completed", response=_response(self._next()), sequence_number=0
+        )
+
+
+# ---------------------------------------------------------------------------
 # Hooks factories
 # ---------------------------------------------------------------------------
 
@@ -187,8 +293,8 @@ def extract_contents(items: list[Any]) -> list[str]:
 def reset_run_state() -> pytest.Generator[None, None, None]:
     """Reset the RunState ContextVar to None before and after every test.
 
-    This ensures each test starts with a clean RunState so that per-run flags
-    (manifest_injected, injected_this_call, invoke_skill_calls) cannot leak
+    This ensures each test starts with a clean RunState so that per-run state
+    (listed_this_call, injected_this_call, invoke_skill_calls) cannot leak
     between tests that share the same asyncio event loop.
     """
     token = _run_state.set(None)

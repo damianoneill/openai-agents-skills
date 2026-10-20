@@ -1,80 +1,151 @@
-"""Per-run state for skill hooks, scoped to the current asyncio task via ContextVar.
+"""Per-run, per-agent state for skill hooks.
 
-RunState is a mutable dataclass held in a ContextVar. Each Runner.run() call runs
-in its own asyncio task; when asyncio.gather creates child tasks for on_llm_start
-calls, those tasks inherit a copy of the parent context that points to the SAME
-RunState object (passed by reference). This allows the double-injection guard
-(injected_this_call) to work correctly across both RunSkillHooks and SkillHooks
-firing on the same LLM call, provided that _get_run_state() is called once in the
-parent task before the gather (e.g. from on_start / on_agent_start).
+The SDK runs each hook in its own asyncio task, so a ContextVar set inside one
+hook is invisible to the next. RunState is therefore stored on the run's
+``Usage`` object, the one object every hook context of a run shares.
+
+A sub-agent used as a tool runs as a separate run that shares its parent's
+``Usage``, so state is keyed by run as well as by agent. The run is identified
+by the SDK's per-run approvals dict (``RunContextWrapper._approvals``): every
+context the SDK derives for one run passes it along, and each agent-as-tool
+call gets a new one. A handoff continues the same run. Runs given the same
+context wrapper share its approvals dict, so they share state too. Callers
+without a real run context (direct hook calls, tests) fall back to a ContextVar.
 """
 
 from __future__ import annotations
 
+import weakref
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-if TYPE_CHECKING:
-    from agents import Agent, RunContextWrapper
+from agents.usage import Usage
 
+if TYPE_CHECKING:
     from .skills import Skill
 
 
 @dataclass
 class RunState:
-    """Mutable per-run state for skill hooks.
+    """Mutable state for one agent within one run.
 
     All per-run state is consolidated here so there is one place to read and test.
-    The instance is stored in a ContextVar so it is automatically scoped to the
-    current asyncio task and concurrent runs cannot interfere with each other.
+    See the module docstring for how it is scoped.
 
     Attributes:
-        manifest_injected: True once the available-skills manifest has been
-            prepended for this run.  Prevents re-injection on subsequent turns.
+        listed_this_call: Names of skills already listed in the manifest for the
+            current LLM call, so a skill registered with both RunSkillHooks and
+            SkillHooks is listed once.  Cleared after each LLM call by on_llm_end.
         injected_this_call: Names of skills already injected during the current
             LLM call.  Shared across RunSkillHooks and SkillHooks via the mutable
             object reference so duplicate injection is prevented even when both
             hooks fire concurrently via asyncio.gather.  Cleared after each LLM
             call by on_llm_end so that skills re-inject on every subsequent turn.
-        invoke_skill_calls: Running count of invoke_skill tool invocations this run.
-            Used to enforce the max_calls_per_run guard.
+        invoke_skill_calls: Running count of invoke_skill tool invocations by this
+            agent in this run.  Used to enforce the max_calls_per_run guard.
         pending_skills: Skills queued by tool-result triggers (on_tool_end) or
-            post-turn triggers (on_llm_end).  Drained and cleared at the next
-            on_llm_start.  Run-scoped via ContextVar so concurrent runs cannot
-            interfere.
-        last_context: The RunContextWrapper from the most recent on_llm_start call.
-            Stored so that deferred callbacks (_drain_pending) have access to
-            runtime context without requiring it to be threaded through every
-            intermediate function.
-        last_agent: The Agent from the most recent on_llm_start call.
+            post-turn triggers (on_llm_end).  Drained and cleared at this
+            agent's next on_llm_start; RunSkillHooks moves its own to the
+            next agent on handoff.
     """
 
-    manifest_injected: bool = False
+    listed_this_call: set[str] = field(default_factory=set)
     injected_this_call: set[str] = field(default_factory=set)
     invoke_skill_calls: int = 0
     pending_skills: list[Skill] = field(default_factory=list)
-    last_context: RunContextWrapper[Any] | None = None
-    last_agent: Agent[Any] | None = None
 
 
 _run_state: ContextVar[RunState | None] = ContextVar("_run_state", default=None)
 
+_SLOT_ATTRIBUTE = "_openai_agents_skills_run_state"
 
-def _get_run_state() -> RunState:
-    """Return the current run's RunState, creating one lazily if needed.
 
-    Call this once from the parent asyncio task (e.g. in on_start / on_agent_start)
-    before any asyncio.gather that fires on_llm_start.  Child tasks created by the
-    gather inherit a context copy that references the same RunState object, so
-    mutations (e.g. adding to injected_this_call) are visible across both hook
-    instances for the same LLM call.
+class _RunStateSlot:
+    """Holds the per-run, per-agent RunStates of every run sharing one Usage.
+
+    Copies start empty because entries hold agents, which must not be deep-copied.
+    So queued skills and invoke_skill counts do not survive the SDK copying or
+    serialising Usage to resume a run. Keeping them would also need a run key that
+    survives the copy, because a resumed run can get a new approvals dict.
+    """
+
+    __slots__ = ("states", "released", "__weakref__")
+
+    def __init__(self) -> None:
+        # Entries hold the run key and agent so their ids cannot be reused mid-run.
+        self.states: dict[tuple[int, int], tuple[Any, Any, RunState]] = {}
+        self.released: set[int] = set()
+
+    def get(self, run_key: Any, agent: Any) -> RunState:
+        key = (id(run_key), id(agent))
+        entry = self.states.get(key)
+        if entry is None:
+            entry = (run_key, agent, RunState())
+            self.states[key] = entry
+        return entry[2]
+
+    def release_with(self, owner: Any, run_key: Any) -> None:
+        """Drop *run_key*'s states once *owner* is garbage collected."""
+        run_id = id(run_key)
+        if run_id not in self.released:
+            self.released.add(run_id)
+            # The finalizer registry outlives everything, so it must not hold the slot:
+            # a skill keeping its context would otherwise keep the whole run alive.
+            weakref.finalize(owner, _release_if_alive, weakref.ref(self), run_id)
+
+    def _release(self, run_id: int) -> None:
+        self.released.discard(run_id)
+        for key in [key for key in self.states if key[0] == run_id]:
+            del self.states[key]
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> _RunStateSlot:
+        return _RunStateSlot()
+
+
+def _release_if_alive(slot_ref: weakref.ref[_RunStateSlot], run_id: int) -> None:
+    slot = slot_ref()
+    if slot is not None:
+        slot._release(run_id)
+
+
+def _get_run_state(context: Any = None, agent: Any = None) -> RunState:
+    """Return the RunState for *agent* in the current run, creating it if needed.
+
+    Args:
+        context: The hook's run context.  When it carries the run's ``Usage``,
+            state is shared by every hook of that run regardless of which
+            asyncio task the SDK runs the hook in.
+        agent: The agent the hook fired for.  Each agent in a run gets its own
+            state.
 
     Returns:
-        The RunState for the current async context.
+        The RunState for *agent* in the current run.
     """
+    usage = getattr(context, "usage", None)
+    if isinstance(usage, Usage):
+        slot = getattr(usage, _SLOT_ATTRIBUTE, None)
+        if not isinstance(slot, _RunStateSlot):
+            slot = _RunStateSlot()
+            object.__setattr__(usage, _SLOT_ATTRIBUTE, slot)
+        return slot.get(getattr(context, "_approvals", None), agent)
+
     state = _run_state.get()
     if state is None:
         state = RunState()
         _run_state.set(state)
     return state
+
+
+def _release_run_state_with(context: Any) -> None:
+    """Drop the current run's states once *context* is garbage collected.
+
+    Pass only the context the SDK gives ``on_llm_start``: it is the run's own
+    context, so it lives until the run ends, fails or is cancelled. A run that
+    uses ``invoke_skill`` without skill hooks never gets here, so its state stays
+    until the ``Usage`` is freed.
+    """
+    usage = getattr(context, "usage", None)
+    slot = getattr(usage, _SLOT_ATTRIBUTE, None)
+    if isinstance(usage, Usage) and isinstance(slot, _RunStateSlot):
+        slot.release_with(context, getattr(context, "_approvals", None))

@@ -8,6 +8,7 @@ on:
 
 jobs:
   test:
+    name: test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -38,3 +39,26 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest --cov=src/openai_agents_skills --cov-report=term-missing --cov-fail-under=90
+
+  test-min-sdk:
+    name: test (Python 3.11, openai-agents 0.8.2)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      # openai-agents 0.8.2 breaks with current openai releases, so pin the oldest it allows.
+      - name: Install dependencies with the minimum supported SDK
+        run: |
+          uv sync --all-extras
+          uv pip install "openai-agents==0.8.2" "openai==2.9.0"
+
+      # --no-sync stops uv run from reinstalling the locked SDK.
+      - name: Run tests
+        run: uv run --no-sync pytest

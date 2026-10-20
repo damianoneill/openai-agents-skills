@@ -404,7 +404,7 @@ class TestPendingDrain:
 class TestDrainPending:
     async def test_returns_empty_list_when_no_pending(self) -> None:
         state = RunState()
-        result = await _drain_pending(state, lambda s, e: None)
+        result = await _drain_pending(state, lambda s, e: None, None, None)
         assert result == []
 
     async def test_drains_and_returns_blocks(self) -> None:
@@ -412,13 +412,13 @@ class TestDrainPending:
         state = RunState()
         state.pending_skills.append(skill)
 
-        blocks = await _drain_pending(state, lambda s, e: None)
+        blocks = await _drain_pending(state, lambda s, e: None, None, None)
         assert blocks == [{"role": "user", "content": "drained!"}]
 
     async def test_pending_cleared_after_drain(self) -> None:
         state = RunState()
         state.pending_skills.append(SimpleSkill("s"))
-        await _drain_pending(state, lambda s, e: None)
+        await _drain_pending(state, lambda s, e: None, None, None)
         assert state.pending_skills == []
 
     async def test_already_injected_skill_skipped(self) -> None:
@@ -428,7 +428,7 @@ class TestDrainPending:
         state.pending_skills.append(skill)
         state.injected_this_call.add("s")  # already claimed
 
-        blocks = await _drain_pending(state, lambda s, e: None)
+        blocks = await _drain_pending(state, lambda s, e: None, None, None)
         assert blocks == []
 
     async def test_error_in_get_prompt_blocks_calls_on_error(self) -> None:
@@ -443,7 +443,7 @@ class TestDrainPending:
         state = RunState()
         state.pending_skills.append(BrokenSkill())
 
-        result = await _drain_pending(state, lambda s, e: errors.append((s, e)))
+        result = await _drain_pending(state, lambda s, e: errors.append((s, e)), None, None)
         assert result == []
         assert len(errors) == 1
         assert isinstance(errors[0][1], RuntimeError)
@@ -461,7 +461,7 @@ class TestDrainPending:
         state = RunState()
         state.pending_skills.append(BrokenSkill())
 
-        await _drain_pending(state, lambda s, e: None)
+        await _drain_pending(state, lambda s, e: None, None, None)
         assert "broken" not in state.injected_this_call
 
     async def test_concurrent_drain_only_processes_each_skill_once(self) -> None:
@@ -485,8 +485,8 @@ class TestDrainPending:
 
         # Run two concurrent drains sharing the same RunState
         results = await asyncio.gather(
-            _drain_pending(state, lambda s, e: None),
-            _drain_pending(state, lambda s, e: None),
+            _drain_pending(state, lambda s, e: None, None, None),
+            _drain_pending(state, lambda s, e: None, None, None),
         )
 
         # Only one drain should have processed the skill

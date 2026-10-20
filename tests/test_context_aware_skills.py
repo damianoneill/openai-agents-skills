@@ -394,7 +394,7 @@ class TestContextAwareIsEnabled:
 
 
 # ---------------------------------------------------------------------------
-# 5.  Deferred (pending) paths - context forwarded via state.last_context
+# 5.  Deferred (pending) paths - context from the draining on_llm_start
 # ---------------------------------------------------------------------------
 
 
@@ -497,8 +497,8 @@ class TestContextAwareDeferredPaths:
         assert len(received_context) >= 1
         assert received_context[-1] is turn2_ctx
 
-    async def test_drain_pending_uses_state_last_context_not_tool_end_context(self) -> None:
-        # Pending drain uses state.last_context, not context when tool fired
+    async def test_drain_pending_uses_llm_start_context_not_tool_end_context(self) -> None:
+        # Pending drain uses the draining on_llm_start's context, not the tool_end context
         received_context: list[Any] = []
 
         class _ToolTriggeredSkill(Skill):
@@ -529,11 +529,11 @@ class TestContextAwareDeferredPaths:
         assert received_context[0] is new_ctx
         assert received_context[0] is not old_ctx
 
+    @pytest.mark.parametrize("allow", [False, True], ids=["blocked", "allowed"])
     async def test_context_gated_pending_skill_respects_drain_time_context_in_is_enabled(
-        self,
+        self, allow: bool
     ) -> None:
-        # Pending skill is_enabled uses state.last_context at drain time
-        # A blocking context prevents injection even though the skill was queued
+        # Pending skill is_enabled uses the draining on_llm_start's context
         injected: list[str] = []
 
         class _GatedPendingSkill(Skill):
@@ -554,16 +554,19 @@ class TestContextAwareDeferredPaths:
         registry.register(_GatedPendingSkill())
         hooks = make_hooks(registry)
         await hooks.on_start(make_mock_context(), make_mock_agent())
-        await fire_tool_end(hooks, "gate_tool")
-        await fire_llm_end(hooks)
+        queue_ctx = MagicMock()
+        queue_ctx.context.allow_skill = True
+        await fire_tool_end(hooks, "gate_tool", context=queue_ctx)
+        await fire_llm_end(hooks, context=queue_ctx)
 
-        blocking_ctx = MagicMock()
-        blocking_ctx.context.allow_skill = False
+        drain_ctx = MagicMock()
+        drain_ctx.context.allow_skill = allow
         items: list[Any] = []
-        await fire_llm_start(hooks, items, context=blocking_ctx)
+        await fire_llm_start(hooks, items, context=drain_ctx)
 
-        assert injected == []
-        assert not any(b.get("content") == "gated-content" for b in items if isinstance(b, dict))
+        assert injected == (["gated-content"] if allow else [])
+        contents = [b.get("content") for b in items if isinstance(b, dict)]
+        assert ("gated-content" in contents) is allow
 
     async def test_run_skill_hooks_pending_skill_receives_context_from_next_llm_start(self) -> None:
         # Same deferred-context guarantee holds for RunSkillHooks
@@ -960,8 +963,8 @@ class TestFileSkillEnabledWhenUnderRunSkillHooks:
 class TestUngatedAlwaysOnFileSkillDebugLog:
     """The one-time debug log fires only for an always-on file skill with no enabled_when.
 
-    Drives the log through the real pipeline (first on_llm_start builds the manifest,
-    which is where the detection runs), so the test also guards that the detection wiring
+    Drives the log through the real pipeline (the detection runs when the agent
+    starts), so the test also guards that the detection wiring
     is reachable — the gap that let a dead-code regression pass silently before.
     """
 
@@ -976,8 +979,8 @@ class TestUngatedAlwaysOnFileSkillDebugLog:
         registry.register(skill)
         hooks = make_run_hooks(registry)
 
-        await hooks.on_agent_start(make_mock_context(), make_mock_agent())
         with caplog.at_level(logging.DEBUG, logger=self._LOGGER):
+            await hooks.on_agent_start(make_mock_context(), make_mock_agent())
             await fire_llm_start(hooks, [], agent=make_mock_agent())
 
         messages = [r.getMessage() for r in caplog.records]
@@ -992,8 +995,8 @@ class TestUngatedAlwaysOnFileSkillDebugLog:
         registry.register(skill)
         hooks = make_run_hooks(registry)
 
-        await hooks.on_agent_start(make_mock_context(), make_mock_agent())
         with caplog.at_level(logging.DEBUG, logger=self._LOGGER):
+            await hooks.on_agent_start(make_mock_context(), make_mock_agent())
             await fire_llm_start(hooks, [], agent=make_mock_agent())
 
         assert not any(self._MESSAGE_PREFIX in r.getMessage() for r in caplog.records)
@@ -1006,8 +1009,8 @@ class TestUngatedAlwaysOnFileSkillDebugLog:
         registry.register(skill)
         hooks = make_run_hooks(registry)
 
-        await hooks.on_agent_start(make_mock_context(), make_mock_agent())
         with caplog.at_level(logging.DEBUG, logger=self._LOGGER):
+            await hooks.on_agent_start(make_mock_context(), make_mock_agent())
             await fire_llm_start(hooks, [], agent=make_mock_agent())
 
         assert not any(self._MESSAGE_PREFIX in r.getMessage() for r in caplog.records)
