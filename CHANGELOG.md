@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.0 (2026-10-20)
+
+### BREAKING CHANGE
+
+- the invoke_skill call limit (max_calls_per_run) now
+applies to each agent in a run, not to the whole run. When the limit
+is reached, the tool returns "invoke_skill limit reached for this
+agent in this run" instead of "invoke_skill limit reached for this
+run". Code or tests that check for the old message need updating.
+- openai-agents >= 0.8.2 is now required.
+
+### Fix
+
+- make triggered skills reach the model during a run (#5)
+
 ## v0.6.0 (2026-09-29)
 
 ### Feat
