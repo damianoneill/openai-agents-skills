@@ -8,7 +8,8 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from conftest import MockRouter
+from agents.tracing import trace
+from conftest import MockRouter, SpanCollector
 
 from openai_agents_skills import Skill, SkillRegistry
 
@@ -430,6 +431,36 @@ class TestSelectForMessageWithRouter:
         assert result == []
         # Router should not have been called.
         assert len(router.calls) == 0
+
+    async def test_routing_span_records_always_on_when_nothing_to_route(
+        self, span_collector: SpanCollector
+    ) -> None:
+        """The router is still bypassed, but the always-on skills are recorded on the span."""
+        router = MockRouter(names=["always_on"])
+        registry = SkillRegistry(router=router)
+        registry.register(_AlwaysOnSkill())
+
+        with trace("test-workflow"):
+            result = await registry.select_for_message("test")
+
+        assert result == []
+        assert router.calls == []
+        spans = span_collector.routing_spans()
+        assert len(spans) == 1
+        data = spans[0].span_data.data
+        assert data["always_on"] == ["always_on"]
+        assert data["candidates"] == []
+        assert data["selected"] == []
+        assert data["cache_hit"] is False
+
+    async def test_no_routing_span_without_router(self, span_collector: SpanCollector) -> None:
+        registry = SkillRegistry()
+        registry.register(_AlwaysOnSkill())
+
+        with trace("test-workflow"):
+            await registry.select_for_message("test")
+
+        assert span_collector.routing_spans() == []
 
     async def test_router_returns_multiple_skills_in_order(self) -> None:
         """The order of names returned by the router is preserved."""

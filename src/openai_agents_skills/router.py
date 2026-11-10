@@ -259,6 +259,7 @@ class BaseSkillRouter:
                 )
                 return cached
 
+            # Direct callers only: the registry never calls the router with nothing routable.
             if not routable:
                 _record_routing(
                     span,

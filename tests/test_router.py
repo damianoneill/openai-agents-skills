@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from agents.model_settings import ModelSettings
-from agents.tracing import Span, Trace, TracingProcessor, set_trace_processors, trace
+from agents.tracing import trace
+from conftest import SpanCollector
 
 from openai_agents_skills import BaseSkillRouter, LLMSkillRouter, Skill, SkillRouter
 from openai_agents_skills.router import _extract_json
@@ -726,49 +727,9 @@ class TestLLMSkillRouterModelSettings:
 # ---------------------------------------------------------------------------
 
 
-class _SpanCollector(TracingProcessor):
-    """Trace processor that records every span ended during a test."""
-
-    def __init__(self) -> None:
-        self.spans: list[Span[Any]] = []
-
-    def on_trace_start(self, trace: Trace) -> None:  # noqa: D102
-        pass
-
-    def on_trace_end(self, trace: Trace) -> None:  # noqa: D102
-        pass
-
-    def on_span_start(self, span: Span[Any]) -> None:  # noqa: D102
-        pass
-
-    def on_span_end(self, span: Span[Any]) -> None:  # noqa: D102
-        self.spans.append(span)
-
-    def force_flush(self) -> None:  # noqa: D102
-        pass
-
-    def shutdown(self) -> None:  # noqa: D102
-        pass
-
-    def routing_spans(self) -> list[Span[Any]]:
-        """Return only the ``skill_routing`` custom spans collected."""
-        return [s for s in self.spans if getattr(s.span_data, "name", None) == "skill_routing"]
-
-
-@pytest.fixture
-def span_collector() -> Any:
-    """Install a span-collecting trace processor for the duration of a test."""
-    collector = _SpanCollector()
-    set_trace_processors([collector])
-    try:
-        yield collector
-    finally:
-        set_trace_processors([])
-
-
 class TestLLMSkillRouterTracing:
     async def test_select_emits_skill_routing_span_with_selected_and_rejected(
-        self, span_collector: _SpanCollector
+        self, span_collector: SpanCollector
     ) -> None:
         mock_model, _ = _make_mock_model('{"selected": ["skill_a"]}')
         router = LLMSkillRouter(model=mock_model)
@@ -790,7 +751,7 @@ class TestLLMSkillRouterTracing:
         assert data["cache_hit"] is False
         assert "error" not in data
 
-    async def test_cache_hit_records_cache_hit_true(self, span_collector: _SpanCollector) -> None:
+    async def test_cache_hit_records_cache_hit_true(self, span_collector: SpanCollector) -> None:
         mock_model, _ = _make_mock_model('{"selected": ["skill_a"]}')
         router = LLMSkillRouter(model=mock_model)
         skills = [_RoutableSkill()]
@@ -805,7 +766,7 @@ class TestLLMSkillRouterTracing:
         assert routing[1].span_data.data["cache_hit"] is True
         assert routing[1].span_data.data["selected"] == ["skill_a"]
 
-    async def test_error_path_records_error_on_span(self, span_collector: _SpanCollector) -> None:
+    async def test_error_path_records_error_on_span(self, span_collector: SpanCollector) -> None:
         mock_model, _ = _make_error_model(RuntimeError("network error"))
         router = LLMSkillRouter(model=mock_model)
 
@@ -822,7 +783,7 @@ class TestLLMSkillRouterTracing:
         assert data["error_type"] == "RuntimeError"
 
     async def test_no_active_trace_emits_no_span_and_no_error_log(
-        self, span_collector: _SpanCollector, caplog: pytest.LogCaptureFixture
+        self, span_collector: SpanCollector, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Without a trace, routing must not create a span nor log a 'No active trace' error."""
         mock_model, _ = _make_mock_model('{"selected": ["skill_a"]}')
@@ -835,7 +796,7 @@ class TestLLMSkillRouterTracing:
         assert span_collector.routing_spans() == []
         assert not any("No active trace" in r.getMessage() for r in caplog.records)
 
-    async def test_always_on_names_recorded_on_span(self, span_collector: _SpanCollector) -> None:
+    async def test_always_on_names_recorded_on_span(self, span_collector: SpanCollector) -> None:
         """Always-on skills injected unconditionally are recorded on the routing span.
 
         They are excluded from the manifest/candidates but must still appear via
@@ -861,7 +822,7 @@ class TestLLMSkillRouterTracing:
         assert "non_routable" not in data["rejected"]
 
     async def test_always_on_derived_from_skills_when_param_omitted(
-        self, span_collector: _SpanCollector
+        self, span_collector: SpanCollector
     ) -> None:
         """When ``always_on`` is not passed, names are derived from always-on skills in *skills*."""
         mock_model, _ = _make_mock_model('{"selected": ["skill_a"]}')
@@ -875,7 +836,7 @@ class TestLLMSkillRouterTracing:
         assert data["always_on_count"] == 1
         assert data["candidates"] == ["skill_a"]
 
-    async def test_always_on_not_part_of_cache_key(self, span_collector: _SpanCollector) -> None:
+    async def test_always_on_not_part_of_cache_key(self, span_collector: SpanCollector) -> None:
         """``always_on`` must not affect the cache key.
 
         Same message and candidate set with differing ``always_on`` must hit the

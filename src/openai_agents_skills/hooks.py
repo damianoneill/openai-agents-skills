@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 from agents import (
@@ -290,6 +291,51 @@ def _build_manifest_blocks(
     return [{"role": "user", "content": manifest_text}]
 
 
+# Name of the tracing span emitted each time triggered skills are drained into an LLM call.
+_TRIGGERED_SPAN_NAME = "skill_triggered"
+
+
+def _triggered_span() -> AbstractContextManager[Any]:
+    """Return a tracing-span context manager for one drain of triggered skills.
+
+    Mirrors the router's ``skill_routing`` span: a ``custom_span`` in the host's
+    trace when a trace is active, otherwise a null context with no overhead.
+    """
+    from agents.tracing import custom_span, get_current_trace
+
+    if get_current_trace() is None:
+        return nullcontext(None)
+    return custom_span(_TRIGGERED_SPAN_NAME)
+
+
+def _record_triggered(
+    span: Any | None,
+    *,
+    triggered: list[str],
+    collected: list[str],
+    already_claimed: list[str],
+    disabled: list[str],
+    failed: list[str],
+    error: Exception | None = None,
+) -> None:
+    """Attach the outcome of a drain to *span*.  No-op when *span* is ``None``."""
+    if span is None:
+        return
+    data = span.span_data.data
+    data["triggered"] = triggered
+    data["triggered_count"] = len(triggered)
+    # Loaded, not proof of injection: blocks may be empty or the LLM call may abort.
+    data["collected"] = collected
+    data["collected_count"] = len(collected)
+    # Claimed by another path this call. Its load may still be running, or fail.
+    data["already_claimed"] = already_claimed
+    data["disabled"] = disabled
+    data["failed"] = failed
+    if error is not None:
+        data["error"] = str(error)
+        data["error_type"] = type(error).__name__
+
+
 async def _drain_pending(
     state: RunState,
     on_error: Callable[[Skill, Exception], None],
@@ -309,6 +355,10 @@ async def _drain_pending(
     is cleared synchronously in the same un-interrupted block, preventing the
     second caller from seeing stale entries.
 
+    Each drain emits one ``skill_triggered`` tracing span (when a trace is
+    active) recording what happened to each queued skill, because the
+    ``skill_routing`` span only shows the router's choice.
+
     Args:
         state: The current run's :class:`~openai_agents_skills._state.RunState`.
         on_error: Error handler called when ``get_prompt_blocks`` raises.
@@ -323,27 +373,54 @@ async def _drain_pending(
 
     # Claim each skill synchronously (no await) so that a concurrent caller
     # finds an empty pending list and an already-populated injected_this_call.
+    queued: list[str] = []
     to_drain: list[Skill] = []
+    already_claimed: list[str] = []
     for skill in state.pending_skills:
+        if skill.name in queued:
+            continue
+        queued.append(skill.name)
         if skill.name not in state.injected_this_call:
             state.injected_this_call.add(skill.name)
             to_drain.append(skill)
+        else:
+            already_claimed.append(skill.name)
     state.pending_skills.clear()
 
-    if not to_drain:
-        return []
-
     all_blocks: list[Any] = []
-    for skill in to_drain:
-        if not skill.is_enabled(context, agent):
-            continue
+    collected: list[str] = []
+    disabled: list[str] = []
+    failed: list[str] = []
+    error: Exception | None = None
+    with _triggered_span() as span:
         try:
-            blocks = await skill.get_prompt_blocks(context, agent)
-            all_blocks.extend(blocks)
+            for skill in to_drain:
+                if not skill.is_enabled(context, agent):
+                    disabled.append(skill.name)
+                    continue
+                try:
+                    blocks = await skill.get_prompt_blocks(context, agent)
+                    all_blocks.extend(blocks)
+                    collected.append(skill.name)
+                except Exception as exc:
+                    # Remove from seen on error so the skill can retry next turn.
+                    state.injected_this_call.discard(skill.name)
+                    failed.append(skill.name)
+                    on_error(skill, exc)
         except Exception as exc:
-            # Remove from seen on error so the skill can retry next turn.
-            state.injected_this_call.discard(skill.name)
-            on_error(skill, exc)
+            error = exc
+            raise
+        finally:
+            # Record even when an on_error handler re-raises, so the span is never empty.
+            _record_triggered(
+                span,
+                triggered=queued,
+                collected=collected,
+                already_claimed=already_claimed,
+                disabled=disabled,
+                failed=failed,
+                error=error,
+            )
     return all_blocks
 
 
@@ -399,6 +476,10 @@ class _SkillInjectionMixin:
         Builds the manifest, routes the message to select conditional skills,
         merges with always-on and direct skills, drains any pending triggered
         skills, then prepends all resulting prompt blocks to *input_items*.
+
+        With an active trace, routing records a ``skill_routing`` span (from the
+        router, or from the registry when nothing is routable) and draining
+        records a ``skill_triggered`` span.
         """
         state = _get_run_state(context, agent)
         _release_run_state_with(context)
