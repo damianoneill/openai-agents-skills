@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from .router import _record_routing, _routing_span
+from ._tracing import _ROUTING_SPAN_NAME, _custom_span, _record_routing
 from .skills import Skill
 
 if TYPE_CHECKING:
@@ -161,7 +161,7 @@ class SkillRegistry:
         always_on_names = [s.name for s in enabled if s.always_on]
         if not routable:
             # Skip the router but keep the always-on skills visible in the trace.
-            with _routing_span() as span:
+            with _custom_span(_ROUTING_SPAN_NAME) as span:
                 _record_routing(
                     span, candidates=[], selected=[], cache_hit=False, always_on=always_on_names
                 )

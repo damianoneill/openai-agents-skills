@@ -144,6 +144,17 @@ class SimpleSkill(Skill):
         return [{"role": "user", "content": self._content}]
 
 
+class ErrorSkill(Skill):
+    """Skill that raises ValueError from get_prompt_blocks."""
+
+    def __init__(self, name: str = "error_skill") -> None:
+        self.name = name
+        self.description = "Always raises."
+
+    async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+        raise ValueError(f"Skill {self.name!r} intentionally failed")
+
+
 # ---------------------------------------------------------------------------
 # Mock object factories
 # ---------------------------------------------------------------------------

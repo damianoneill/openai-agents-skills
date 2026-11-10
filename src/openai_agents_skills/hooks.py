@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 from agents import (
@@ -55,6 +54,7 @@ from agents import (
 from agents.tool_context import ToolContext
 
 from ._state import RunState, _get_run_state, _release_run_state_with
+from ._tracing import _TRIGGERED_SPAN_NAME, _custom_span, _record_triggered
 from .loader import FileSkill
 from .registry import SkillRegistry
 from .skills import Skill
@@ -291,51 +291,6 @@ def _build_manifest_blocks(
     return [{"role": "user", "content": manifest_text}]
 
 
-# Name of the tracing span emitted each time triggered skills are drained into an LLM call.
-_TRIGGERED_SPAN_NAME = "skill_triggered"
-
-
-def _triggered_span() -> AbstractContextManager[Any]:
-    """Return a tracing-span context manager for one drain of triggered skills.
-
-    Mirrors the router's ``skill_routing`` span: a ``custom_span`` in the host's
-    trace when a trace is active, otherwise a null context with no overhead.
-    """
-    from agents.tracing import custom_span, get_current_trace
-
-    if get_current_trace() is None:
-        return nullcontext(None)
-    return custom_span(_TRIGGERED_SPAN_NAME)
-
-
-def _record_triggered(
-    span: Any | None,
-    *,
-    triggered: list[str],
-    collected: list[str],
-    already_claimed: list[str],
-    disabled: list[str],
-    failed: list[str],
-    error: Exception | None = None,
-) -> None:
-    """Attach the outcome of a drain to *span*.  No-op when *span* is ``None``."""
-    if span is None:
-        return
-    data = span.span_data.data
-    data["triggered"] = triggered
-    data["triggered_count"] = len(triggered)
-    # Loaded, not proof of injection: blocks may be empty or the LLM call may abort.
-    data["collected"] = collected
-    data["collected_count"] = len(collected)
-    # Claimed by another path this call. Its load may still be running, or fail.
-    data["already_claimed"] = already_claimed
-    data["disabled"] = disabled
-    data["failed"] = failed
-    if error is not None:
-        data["error"] = str(error)
-        data["error_type"] = type(error).__name__
-
-
 async def _drain_pending(
     state: RunState,
     on_error: Callable[[Skill, Exception], None],
@@ -373,13 +328,13 @@ async def _drain_pending(
 
     # Claim each skill synchronously (no await) so that a concurrent caller
     # finds an empty pending list and an already-populated injected_this_call.
-    queued: list[str] = []
+    triggered: list[str] = []
     to_drain: list[Skill] = []
     already_claimed: list[str] = []
     for skill in state.pending_skills:
-        if skill.name in queued:
+        if skill.name in triggered:
             continue
-        queued.append(skill.name)
+        triggered.append(skill.name)
         if skill.name not in state.injected_this_call:
             state.injected_this_call.add(skill.name)
             to_drain.append(skill)
@@ -392,7 +347,7 @@ async def _drain_pending(
     disabled: list[str] = []
     failed: list[str] = []
     error: Exception | None = None
-    with _triggered_span() as span:
+    with _custom_span(_TRIGGERED_SPAN_NAME) as span:
         try:
             for skill in to_drain:
                 if not skill.is_enabled(context, agent):
@@ -414,7 +369,7 @@ async def _drain_pending(
             # Record even when an on_error handler re-raises, so the span is never empty.
             _record_triggered(
                 span,
-                triggered=queued,
+                triggered=triggered,
                 collected=collected,
                 already_claimed=already_claimed,
                 disabled=disabled,

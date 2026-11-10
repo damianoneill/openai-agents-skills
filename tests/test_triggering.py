@@ -14,6 +14,7 @@ import pytest
 from agents import Agent, Runner, function_tool
 from agents.tracing import trace
 from conftest import (
+    ErrorSkill,
     FakeModel,
     SimpleSkill,
     SpanCollector,
@@ -477,8 +478,6 @@ class TestDrainPending:
 
     async def test_concurrent_drain_only_processes_each_skill_once(self) -> None:
         """Simulates two concurrent _drain_pending calls sharing the same RunState."""
-        import asyncio
-
         call_count = 0
 
         class CountingSkill(Skill):
@@ -649,8 +648,6 @@ class TestHookDeduplication:
     async def test_pending_blocks_not_double_injected_when_both_hooks_drain(self) -> None:
         """When both hooks call on_llm_start concurrently, each pending skill's
         blocks appear in input_items exactly once."""
-        import asyncio
-
         registry = SkillRegistry()
         skill = SimpleSkill("s", triggers_after_tools=["t"], content="unique-block")
         registry.register(skill)
@@ -774,14 +771,6 @@ class TestTriggersAfterToolsIgnoresContent:
 # ---------------------------------------------------------------------------
 
 
-class _BrokenSkill(Skill):
-    name = "broken"
-    description = "always raises"
-
-    async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
-        raise RuntimeError("boom")
-
-
 class _EmptySkill(SimpleSkill):
     async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
         return []
@@ -879,7 +868,7 @@ class TestTriggeredSkillSpan:
             [
                 SimpleSkill("ok"),
                 SimpleSkill("off", enabled=False),
-                _BrokenSkill(),
+                ErrorSkill("broken"),
                 _EmptySkill("empty"),
                 SimpleSkill("ok"),
             ]
@@ -901,10 +890,10 @@ class TestTriggeredSkillSpan:
         self, span_collector: SpanCollector
     ) -> None:
         """A re-raise aborts the call, so the collected blocks never reach the input."""
-        _get_run_state().pending_skills.extend([SimpleSkill("ok"), _BrokenSkill()])
+        _get_run_state().pending_skills.extend([SimpleSkill("ok"), ErrorSkill("broken")])
         items: list[Any] = [{"role": "user", "content": "go"}]
 
-        with trace("test-workflow"), pytest.raises(RuntimeError, match="boom"):
+        with trace("test-workflow"), pytest.raises(ValueError, match="intentionally failed"):
             await fire_llm_start(make_hooks(SkillRegistry()), items)
 
         assert items == [{"role": "user", "content": "go"}]
@@ -912,8 +901,8 @@ class TestTriggeredSkillSpan:
         assert data["triggered"] == ["ok", "broken"]
         assert data["collected"] == ["ok"]
         assert data["failed"] == ["broken"]
-        assert data["error"] == "boom"
-        assert data["error_type"] == "RuntimeError"
+        assert data["error"] == "Skill 'broken' intentionally failed"
+        assert data["error_type"] == "ValueError"
 
     async def test_no_span_without_active_trace(self, span_collector: SpanCollector) -> None:
         state = RunState()
