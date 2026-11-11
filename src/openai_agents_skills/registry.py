@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ._tracing import _ROUTING_SPAN_NAME, _custom_span, _record_routing
 from .skills import Skill
 
 if TYPE_CHECKING:
@@ -137,9 +138,10 @@ class SkillRegistry:
 
         Only skills with ``always_on=False`` are routed; always-on skill names
         are still forwarded to the router so they can be recorded on the routing
-        span for observability.
+        span for observability.  When nothing is routable the router is not
+        called, but a ``skill_routing`` span still records the always-on skills.
         Returns ``[]`` when no router is configured (all active skills then come
-        from :meth:`get_always_on`).
+        from :meth:`get_always_on`, and no routing span is emitted).
 
         Args:
             message: The routing context string — typically the last user message
@@ -156,9 +158,14 @@ class SkillRegistry:
             return []
         enabled = [s for s in self._skills.values() if s.is_enabled(context, agent)]
         routable = [s for s in enabled if not s.always_on]
-        if not routable:
-            return []
         always_on_names = [s.name for s in enabled if s.always_on]
+        if not routable:
+            # Skip the router but keep the always-on skills visible in the trace.
+            with _custom_span(_ROUTING_SPAN_NAME) as span:
+                _record_routing(
+                    span, candidates=[], selected=[], cache_hit=False, always_on=always_on_names
+                )
+            return []
         names = await self._router.select(message, routable, always_on=always_on_names)
         return [self._skills[n] for n in names if n in self._skills]
 

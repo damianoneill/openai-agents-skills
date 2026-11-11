@@ -7,16 +7,28 @@ _drain_pending concurrency safety, cross-agent drain, and deduplication.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
+import pytest
+from agents import Agent, Runner, function_tool
+from agents.tracing import trace
 from conftest import (
+    ErrorSkill,
+    FakeModel,
     SimpleSkill,
+    SpanCollector,
+    extract_contents,
+    fire_llm_start,
+    fire_tool_end,
     make_hooks,
+    make_message,
     make_mock_agent,
     make_mock_context,
     make_mock_response,
     make_mock_tool,
     make_run_hooks,
+    make_tool_call,
 )
 
 from openai_agents_skills import Skill, SkillHooks, SkillRegistry
@@ -466,8 +478,6 @@ class TestDrainPending:
 
     async def test_concurrent_drain_only_processes_each_skill_once(self) -> None:
         """Simulates two concurrent _drain_pending calls sharing the same RunState."""
-        import asyncio
-
         call_count = 0
 
         class CountingSkill(Skill):
@@ -638,8 +648,6 @@ class TestHookDeduplication:
     async def test_pending_blocks_not_double_injected_when_both_hooks_drain(self) -> None:
         """When both hooks call on_llm_start concurrently, each pending skill's
         blocks appear in input_items exactly once."""
-        import asyncio
-
         registry = SkillRegistry()
         skill = SimpleSkill("s", triggers_after_tools=["t"], content="unique-block")
         registry.register(skill)
@@ -756,3 +764,197 @@ class TestTriggersAfterToolsIgnoresContent:
         assert "skill-one" in queued
         assert "skill-two" in queued
         assert "unrelated" not in queued  # registered for a different tool name
+
+
+# ---------------------------------------------------------------------------
+# skill_triggered tracing span
+# ---------------------------------------------------------------------------
+
+
+class _EmptySkill(SimpleSkill):
+    async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+        return []
+
+
+class _SlowFailingSkill(SimpleSkill):
+    async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+        await asyncio.sleep(0)
+        raise RuntimeError("load failed")
+
+
+class TestTriggeredSkillSpan:
+    async def test_drain_records_triggered_and_collected(
+        self, span_collector: SpanCollector
+    ) -> None:
+        registry = SkillRegistry()
+        registry.register(SimpleSkill("after_tool", triggers_after_tools=["write_file"]))
+        hooks = SkillHooks(registry=registry)
+        agent = make_mock_agent()
+
+        with trace("test-workflow"):
+            await fire_tool_end(hooks, "write_file", agent=agent)
+            await fire_llm_start(hooks, [], agent=agent)
+
+        spans = span_collector.triggered_spans()
+        assert len(spans) == 1
+        data = spans[0].span_data.data
+        assert data["triggered"] == ["after_tool"]
+        assert data["triggered_count"] == 1
+        assert data["collected"] == ["after_tool"]
+        assert data["collected_count"] == 1
+        assert data["already_claimed"] == []
+        assert data["disabled"] == []
+        assert data["failed"] == []
+
+    async def test_skill_already_added_this_call_recorded_and_not_duplicated(
+        self, span_collector: SpanCollector
+    ) -> None:
+        """A triggered skill that always-on already claimed this call shows as already_claimed."""
+        registry = SkillRegistry()
+        registry.register(
+            SimpleSkill("both", content="both content", always_on=True, triggers_after_tools=["t"])
+        )
+        hooks = SkillHooks(registry=registry)
+        agent = make_mock_agent()
+        items: list[Any] = []
+
+        with trace("test-workflow"):
+            await fire_tool_end(hooks, "t", agent=agent)
+            await fire_llm_start(hooks, items, agent=agent)
+
+        data = span_collector.triggered_spans()[0].span_data.data
+        assert data["triggered"] == ["both"]
+        assert data["collected"] == []
+        assert data["already_claimed"] == ["both"]
+        assert extract_contents(items).count("both content") == 1
+
+    async def test_already_claimed_skill_can_still_fail_to_load(
+        self, span_collector: SpanCollector
+    ) -> None:
+        """The drain skips a skill the other hook claimed, even though that load then fails."""
+        registry = SkillRegistry()
+        registry.register(_SlowFailingSkill("flaky", always_on=True, triggers_after_tools=["t"]))
+        failed_loads: list[str] = []
+        run_hooks = RunSkillHooks(
+            registry=registry, on_skill_error=lambda s, e: failed_loads.append(s.name)
+        )
+        agent_hooks = SkillHooks(
+            registry=registry, on_skill_error=lambda s, e: failed_loads.append(s.name)
+        )
+        agent = make_mock_agent()
+        items: list[Any] = []
+
+        with trace("test-workflow"):
+            await fire_tool_end(run_hooks, "t", agent=agent)
+            await asyncio.gather(
+                fire_llm_start(run_hooks, items, agent=agent),
+                fire_llm_start(agent_hooks, items, agent=agent),
+            )
+
+        assert failed_loads == ["flaky"]
+        spans = span_collector.triggered_spans()
+        assert len(spans) == 1
+        data = spans[0].span_data.data
+        assert data["already_claimed"] == ["flaky"]
+        assert data["collected"] == []
+        assert data["failed"] == []
+
+    async def test_disabled_failed_and_empty_skills_recorded(
+        self, span_collector: SpanCollector
+    ) -> None:
+        """A skill that returns no blocks still counts as collected."""
+        state = RunState()
+        state.pending_skills.extend(
+            [
+                SimpleSkill("ok"),
+                SimpleSkill("off", enabled=False),
+                ErrorSkill("broken"),
+                _EmptySkill("empty"),
+                SimpleSkill("ok"),
+            ]
+        )
+
+        with trace("test-workflow"):
+            blocks = await _drain_pending(state, lambda s, e: None, None, None)
+
+        assert len(blocks) == 1
+        data = span_collector.triggered_spans()[0].span_data.data
+        assert data["triggered"] == ["ok", "off", "broken", "empty"]
+        assert data["collected"] == ["ok", "empty"]
+        assert data["already_claimed"] == []
+        assert data["disabled"] == ["off"]
+        assert data["failed"] == ["broken"]
+        assert "error" not in data
+
+    async def test_span_keeps_outcome_when_on_error_reraises(
+        self, span_collector: SpanCollector
+    ) -> None:
+        """A re-raise aborts the call, so the collected blocks never reach the input."""
+        _get_run_state().pending_skills.extend([SimpleSkill("ok"), ErrorSkill("broken")])
+        items: list[Any] = [{"role": "user", "content": "go"}]
+
+        with trace("test-workflow"), pytest.raises(ValueError, match="intentionally failed"):
+            await fire_llm_start(make_hooks(SkillRegistry()), items)
+
+        assert items == [{"role": "user", "content": "go"}]
+        data = span_collector.triggered_spans()[0].span_data.data
+        assert data["triggered"] == ["ok", "broken"]
+        assert data["collected"] == ["ok"]
+        assert data["failed"] == ["broken"]
+        assert data["error"] == "Skill 'broken' intentionally failed"
+        assert data["error_type"] == "ValueError"
+
+    async def test_no_span_without_active_trace(self, span_collector: SpanCollector) -> None:
+        state = RunState()
+        state.pending_skills.append(SimpleSkill("s", content="still injected"))
+
+        blocks = await _drain_pending(state, lambda s, e: None, None, None)
+
+        assert blocks == [{"role": "user", "content": "still injected"}]
+        assert span_collector.triggered_spans() == []
+
+    async def test_no_span_when_nothing_queued(self, span_collector: SpanCollector) -> None:
+        registry = SkillRegistry()
+        registry.register(SimpleSkill("after_tool", triggers_after_tools=["write_file"]))
+        hooks = SkillHooks(registry=registry)
+
+        with trace("test-workflow"):
+            await fire_llm_start(hooks, [], agent=make_mock_agent())
+
+        assert span_collector.triggered_spans() == []
+
+    async def test_span_nests_under_agent_span_in_a_real_run(
+        self, span_collector: SpanCollector
+    ) -> None:
+        """In a real run the span sits under the agent span, where trace exporters expect it."""
+
+        @function_tool
+        def write_file() -> str:
+            """Write a file."""
+            return "ok"
+
+        registry = SkillRegistry()
+        registry.register(
+            SimpleSkill(
+                "after_tool", content="after_tool body", triggers_after_tools=["write_file"]
+            )
+        )
+        model = FakeModel([[make_tool_call("write_file", "c1")], [make_message("done")]])
+        agent = Agent(
+            name="worker", model=model, tools=[write_file], hooks=SkillHooks(registry=registry)
+        )
+
+        await Runner.run(agent, "go")
+
+        triggered = span_collector.triggered_spans()
+        assert len(triggered) == 1
+        assert triggered[0].span_data.data["collected"] == ["after_tool"]
+        # SDK 0.24 puts a turn span between the agent span and this one.
+        spans = {s.span_id: s for s in span_collector.spans}
+        ancestor_types: list[str] = []
+        span = triggered[0]
+        while span.parent_id in spans:
+            span = spans[span.parent_id]
+            ancestor_types.append(span.span_data.type)
+        assert "agent" in ancestor_types
+        assert "after_tool body" in str(model.inputs[1])

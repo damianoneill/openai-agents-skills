@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from agents.items import ModelResponse
 from agents.models.interface import Model
+from agents.tracing import Span, Trace, TracingProcessor, set_trace_processors
 from agents.usage import Usage
 from openai.types.responses import (
     Response,
@@ -29,6 +30,59 @@ from openai_agents_skills.hooks import RunSkillHooks
 def _reraise(skill: Any, exc: Exception) -> None:  # noqa: ARG001
     """Re-raise *exc* — use as ``on_skill_error`` to surface errors in tests."""
     raise exc
+
+
+# ---------------------------------------------------------------------------
+# Tracing span collector
+# ---------------------------------------------------------------------------
+
+
+class SpanCollector(TracingProcessor):
+    """Trace processor that records every span ended during a test."""
+
+    def __init__(self) -> None:
+        self.spans: list[Span[Any]] = []
+
+    def on_trace_start(self, trace: Trace) -> None:  # noqa: D102
+        pass
+
+    def on_trace_end(self, trace: Trace) -> None:  # noqa: D102
+        pass
+
+    def on_span_start(self, span: Span[Any]) -> None:  # noqa: D102
+        pass
+
+    def on_span_end(self, span: Span[Any]) -> None:  # noqa: D102
+        self.spans.append(span)
+
+    def force_flush(self) -> None:  # noqa: D102
+        pass
+
+    def shutdown(self) -> None:  # noqa: D102
+        pass
+
+    def custom_spans(self, name: str) -> list[Span[Any]]:
+        """Return only the custom spans called *name*."""
+        return [s for s in self.spans if getattr(s.span_data, "name", None) == name]
+
+    def routing_spans(self) -> list[Span[Any]]:
+        """Return only the ``skill_routing`` custom spans collected."""
+        return self.custom_spans("skill_routing")
+
+    def triggered_spans(self) -> list[Span[Any]]:
+        """Return only the ``skill_triggered`` custom spans collected."""
+        return self.custom_spans("skill_triggered")
+
+
+@pytest.fixture
+def span_collector() -> Any:
+    """Install a span-collecting trace processor for the duration of a test."""
+    collector = SpanCollector()
+    set_trace_processors([collector])
+    try:
+        yield collector
+    finally:
+        set_trace_processors([])
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +142,17 @@ class SimpleSkill(Skill):
 
     async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
         return [{"role": "user", "content": self._content}]
+
+
+class ErrorSkill(Skill):
+    """Skill that raises ValueError from get_prompt_blocks."""
+
+    def __init__(self, name: str = "error_skill") -> None:
+        self.name = name
+        self.description = "Always raises."
+
+    async def get_prompt_blocks(self, context: Any, agent: Any, args: str = "") -> list[Any]:
+        raise ValueError(f"Skill {self.name!r} intentionally failed")
 
 
 # ---------------------------------------------------------------------------

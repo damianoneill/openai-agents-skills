@@ -19,6 +19,7 @@ import pytest
 from agents import RunContextWrapper
 from agents.tool_context import ToolContext
 from conftest import (
+    ErrorSkill,
     MockRouter,
     SimpleSkill,
     extract_contents,
@@ -58,17 +59,6 @@ class _MultiBlockSkill(Skill):
             {"role": "user", "content": self._block_a},
             {"role": "user", "content": self._block_b},
         ]
-
-
-class _ErrorSkill(Skill):
-    """Skill that raises ValueError from get_prompt_blocks."""
-
-    def __init__(self, name: str = "error_skill") -> None:
-        self.name = name
-        self.description = "Always raises."
-
-    async def get_prompt_blocks(self, context, agent, args: str = "") -> list[Any]:
-        raise ValueError(f"Skill {self.name!r} intentionally failed")
 
 
 async def _invoke(
@@ -673,7 +663,7 @@ class TestErrorResilience:
     async def test_error_in_one_skill_does_not_prevent_others(self) -> None:
         """A ValueError from get_prompt_blocks must not abort injection of other skills."""
         errors: list[tuple[Skill, Exception]] = []
-        error_skill = _ErrorSkill("broken")
+        error_skill = ErrorSkill("broken")
         good_skill = SimpleSkill("good", content="good content", always_on=True)
 
         hooks = SkillHooks(
@@ -690,7 +680,7 @@ class TestErrorResilience:
         assert isinstance(errors[0][1], ValueError)
 
     async def test_all_error_skills_leaves_items_unchanged_except_user_msg(self) -> None:
-        hooks = SkillHooks(skills=[_ErrorSkill("e1"), _ErrorSkill("e2")])
+        hooks = SkillHooks(skills=[ErrorSkill("e1"), ErrorSkill("e2")])
         original = {"role": "user", "content": "original"}
         items: list[Any] = [original]
 
@@ -700,7 +690,7 @@ class TestErrorResilience:
 
     async def test_on_skill_error_callback_receives_skill_and_exception(self) -> None:
         received: list[tuple[Skill, Exception]] = []
-        error_skill = _ErrorSkill("my_broken_skill")
+        error_skill = ErrorSkill("my_broken_skill")
 
         hooks = SkillHooks(
             skills=[error_skill],
@@ -719,7 +709,7 @@ class TestErrorResilience:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Default handler must emit a WARNING containing the skill name."""
-        hooks = SkillHooks(skills=[_ErrorSkill("warn_skill")])
+        hooks = SkillHooks(skills=[ErrorSkill("warn_skill")])
 
         with caplog.at_level(logging.WARNING, logger="openai_agents_skills.hooks"):
             await fire_llm_start(hooks, [])
@@ -731,7 +721,7 @@ class TestErrorResilience:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         hooks = SkillHooks(
-            skills=[_ErrorSkill("quiet")],
+            skills=[ErrorSkill("quiet")],
             on_skill_error=lambda s, e: None,
         )
 
@@ -937,7 +927,7 @@ class TestRunSkillHooks:
     async def test_error_skill_does_not_abort_other_skills(self) -> None:
         good = SimpleSkill("good", content="good content", always_on=True)
         hooks = RunSkillHooks(
-            skills=[_ErrorSkill("bad"), good],
+            skills=[ErrorSkill("bad"), good],
             on_skill_error=lambda s, e: None,
         )
         items: list[Any] = []

@@ -6,74 +6,15 @@ import json
 import logging
 import re
 from collections import OrderedDict
-from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from ._tracing import _ROUTING_SPAN_NAME, _custom_span, _record_routing
 from .skills import Skill
 
 if TYPE_CHECKING:
     from agents.model_settings import ModelSettings
 
 _log = logging.getLogger(__name__)
-
-# Name of the tracing span emitted for each routing decision.
-_ROUTING_SPAN_NAME = "skill_routing"
-
-
-def _routing_span() -> AbstractContextManager[Any]:
-    """Return a tracing-span context manager for a single routing decision.
-
-    Uses the openai-agents SDK ``custom_span`` so routing decisions appear in the
-    host application's trace, alongside the agent/chat spans of the run that
-    triggered routing.  Routing is otherwise invisible: the internal model call
-    in :class:`LLMSkillRouter` runs with tracing disabled, and cache hits make no
-    model call at all, so without this span a silent router failure is
-    indistinguishable from "correctly selected nothing".
-
-    When no trace is active — as in unit tests, or when the host has not
-    configured SDK tracing — a null context is returned instead. This avoids the
-    SDK's "No active trace" error log and adds zero overhead, so routing only
-    emits spans when the caller has already opted into tracing.
-    """
-    from agents.tracing import custom_span, get_current_trace
-
-    if get_current_trace() is None:
-        return nullcontext(None)
-    return custom_span(_ROUTING_SPAN_NAME)
-
-
-def _record_routing(
-    span: Any | None,
-    *,
-    candidates: list[str],
-    selected: list[str],
-    cache_hit: bool,
-    always_on: list[str] | None = None,
-    error: Exception | None = None,
-) -> None:
-    """Attach routing-decision attributes to *span*.
-
-    No-op when *span* is ``None`` (no active trace). Records the candidate skills
-    considered, those selected and rejected, the always-on skills injected
-    unconditionally (so the trace reflects every skill active this turn, not just
-    the routed ones), whether the result came from the LRU cache, and — on
-    failure — the error so silent fallbacks remain queryable.
-    """
-    if span is None:
-        return
-    data = span.span_data.data
-    data["candidates"] = candidates
-    data["candidate_count"] = len(candidates)
-    data["selected"] = selected
-    data["selected_count"] = len(selected)
-    data["rejected"] = [name for name in candidates if name not in selected]
-    data["cache_hit"] = cache_hit
-    if always_on is not None:
-        data["always_on"] = always_on
-        data["always_on_count"] = len(always_on)
-    if error is not None:
-        data["error"] = str(error)
-        data["error_type"] = type(error).__name__
 
 
 _ROUTER_PROMPT_TEMPLATE = (
@@ -246,7 +187,7 @@ class BaseSkillRouter:
         # skipping the router for the second and never selecting its skills.
         cache_key = (message, frozenset(candidates))
 
-        with _routing_span() as span:
+        with _custom_span(_ROUTING_SPAN_NAME) as span:
             if cache_key in self._cache:
                 self._cache.move_to_end(cache_key)
                 cached = list(self._cache[cache_key])
@@ -259,6 +200,7 @@ class BaseSkillRouter:
                 )
                 return cached
 
+            # Direct callers only: the registry never calls the router with nothing routable.
             if not routable:
                 _record_routing(
                     span,

@@ -208,7 +208,8 @@ metadata: # optional: arbitrary key-value pairs
 allowed-tools: Bash(git:*) Read # optional: space-separated list of pre-approved tools
 always-on: false # extension: inject unconditionally (default false)
 user-invocable: true # extension: show in manifest (default true)
-concise-instructions: | # extension: authored concise form (see Instruction forms)
+concise-instructions:
+  | # extension: authored concise form (see Instruction forms)
   Shorter equivalent instructions used when a concise scope is active.
 ---
 Step-by-step instructions the agent follows when handling a payment request...
@@ -347,7 +348,7 @@ result = await Runner.run(
 ```
 
 > **Scoping across agents:** `RunSkillHooks` shares one registry across every agent in
-> the chain, so an `always_on` skill injects for *all* of them — registry membership is
+> the chain, so an `always_on` skill injects for _all_ of them — registry membership is
 > only a per-agent lever when each agent has its own registry via per-agent `SkillHooks`.
 > To scope a skill to a subset of agents on the shared-registry path, gate it on the
 > active agent. A Python `Skill` overrides `is_enabled(context, agent)`; a skill loaded
@@ -475,6 +476,40 @@ class MyCustomRouter(BaseSkillRouter):
 
 registry = SkillRegistry(router=MyCustomRouter())
 ```
+
+---
+
+## Tracing
+
+When an OpenAI Agents SDK trace is active, this library adds two custom spans to it. The keys below
+are in each span's `data` field. Without an active trace nothing is recorded, and
+`set_tracing_disabled(True)` turns the spans off everywhere. Before openai-agents 0.24.0,
+`RunConfig(tracing_disabled=True)` does not stop them for a run started inside a trace the caller
+opened, so they still appear in that trace.
+
+| Span              | Recorded                                                                                                                                 | Data keys                                                                                                                                     |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `skill_routing`   | Before an LLM call that the registry routes, including calls where the agent has no routable skills and the router is skipped.           | `candidates`, `candidate_count`, `selected`, `selected_count`, `rejected`, `cache_hit`, `always_on`, `always_on_count`, `error`, `error_type` |
+| `skill_triggered` | Before an LLM call that processes skills queued by `triggers_after_tools` or `triggers_after_turn`, even if none of them reach the call. | `triggered`, `triggered_count`, `collected`, `collected_count`, `already_claimed`, `disabled`, `failed`, `error`, `error_type`                |
+
+`BaseSkillRouter`, and so `LLMSkillRouter`, records `skill_routing` each time the router runs. When
+the agent has no routable skills, the registry skips the router and records the span itself. For a
+custom router that does not subclass `BaseSkillRouter`, this library records nothing when the router
+runs, so only the skipped calls appear.
+
+On `skill_triggered`, each skill in `triggered` is listed under at most one outcome:
+
+- `collected`: loaded without error. This does not prove the model saw it, because a skill can
+  return no content and a later failure can stop the LLM call.
+- `already_claimed`: skipped because another part of the same call had already taken that skill,
+  for example as an always-on or routed skill. That load may still be running and can still fail.
+- `disabled`: turned off for this agent by `is_enabled` or `enabled_when`.
+- `failed`: raised an error while loading.
+
+`error` and `error_type` appear on `skill_routing` when the router call fails. They appear on
+`skill_triggered` when loading stops on an exception, for example because an `on_skill_error`
+handler re-raised. Skills still waiting to load at that point have no outcome, so the outcome lists
+can be incomplete.
 
 ---
 
