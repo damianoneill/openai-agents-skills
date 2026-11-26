@@ -65,7 +65,33 @@ The model receives and acts on those instructions transparently — no changes t
 
 The SDK passes a mutable `input_items` list to `AgentHooks.on_llm_start` before every model
 invocation, then passes the same list object directly to `model.get_response()`. `SkillHooks`
-prepends skill prompt blocks to that list, so the model sees the skill's instructions on every call.
+prepends skill prompt blocks to that list. The SDK builds a new list for every call, so each block
+goes only to the call it was added to. Which calls get a skill depends on how it is selected:
+
+- Skills passed directly to `SkillHooks` and `always_on` skills are added to every call.
+- Routed skills are added to every call where the router selects them.
+- A `triggers_after_tools` skill is added to the next call after one of its tools runs.
+- A `triggers_after_turn` skill is added to the next call after each model response ("turn" means
+  one model call, not one user message). In a single-agent run that is every call except the first,
+  so a run that finishes in one call never gets it. Each `Runner.run` call is a new run, so in a
+  chat that calls `Runner.run` once per user message, the first call after each message does not
+  get it.
+
+For example, take a run without a router where the model calls `health_check`, then `search`, then
+answers:
+
+| Call | Just before this call              | `always_on=True` | `triggers_after_tools=["health_check"]` | `triggers_after_turn=True` |
+| ---- | ---------------------------------- | ---------------- | --------------------------------------- | -------------------------- |
+| 1    | the user's message                 | yes              | no                                      | no                         |
+| 2    | model response, `health_check` ran | yes              | yes                                     | yes                        |
+| 3    | model response, `search` ran       | yes              | no                                      | yes                        |
+
+A skill gets every call that any of these rules gives it, but never two copies in one call. A
+trigger skill that is not `always_on` is also routable, so the router can add it to any call,
+including the first.
+
+With server-managed conversation state (for example `previous_response_id` or `conversation_id`),
+the server keeps the input of earlier calls, so the model can still see a block on later calls.
 
 ```
 Runner.run()
@@ -103,8 +129,8 @@ class ReplyInBulletsSkill(Skill):
 | `always_on`            | `bool`      | `True` → injects on every call; `False` (default) → routed by description                 |
 | `allowed_tools`        | `list[str]` | Tools this skill may invoke; surfaced in the manifest. Default: `[]`                      |
 | `user_invocable`       | `bool`      | `False` hides the skill from the manifest while still allowing injection. Default: `True` |
-| `triggers_after_tools` | `list[str]` | Tool names that queue this skill for injection after the tool completes. Default: `[]`    |
-| `triggers_after_turn`  | `bool`      | `True` → queued after every model response for quality checks or review. Default: `False` |
+| `triggers_after_tools` | `list[str]` | Tool names after which this skill is added to the next model call. Default: `[]`          |
+| `triggers_after_turn`  | `bool`      | `True` → added to each model call after the first in a single-agent run. Default: `False` |
 
 ### Context-aware skills
 

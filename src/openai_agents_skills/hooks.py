@@ -8,8 +8,8 @@ The injection mechanism:
   ``asyncio.gather``.  The per-call double-injection guard in
   ``RunState.injected_this_call`` prevents duplicate injection when both hook types
   are active simultaneously.
-- ``on_llm_end`` clears the guard after every LLM call so that skills re-inject on
-  every subsequent turn.
+- ``on_llm_end`` clears the guard after every LLM call so that skills can be
+  injected again on the next call.
 
 Usage::
 
@@ -538,7 +538,7 @@ class SkillHooks(AgentHooks, _SkillInjectionMixin):
     Supports both the simple Phase 1 interface (``skills`` list) and Phase 2
     registry-based routing.
 
-    Skills are re-injected on every LLM call within the run.  The
+    Skills are injected again on each LLM call they apply to.  The
     ``on_llm_end`` callback clears the per-call injection guard after each model
     response, so skills are fresh for the next turn.
 
@@ -661,7 +661,7 @@ class RunSkillHooks(RunHooks, _SkillInjectionMixin):
     guard as :class:`SkillHooks` — a skill registered in both ``RunSkillHooks`` and
     a per-agent ``SkillHooks`` injects only once per LLM call.
 
-    Skills are re-injected on every LLM call within the run.  The
+    Skills are injected again on each LLM call they apply to.  The
     ``on_llm_end`` callback clears the per-call injection guard after each model
     response, so skills are fresh for the next turn.
 
