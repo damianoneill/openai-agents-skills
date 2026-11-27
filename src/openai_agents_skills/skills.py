@@ -5,7 +5,8 @@ at the right moment in the agent loop via AgentHooks.on_llm_start.
 
 The SDK passes a mutable input_items list to AgentHooks.on_llm_start before
 every model invocation. SkillHooks prepends each skill's prompt blocks to that
-list so the model receives the skill's instructions on every call.
+list. Which calls get a skill depends on how it is selected (see "How It Works"
+in the README).
 
 Example::
 
@@ -75,8 +76,9 @@ class Skill(ABC):
             :class:`~openai_agents_skills.hooks.RunSkillHooks`.
         triggers_after_turn: When ``True``, this skill is queued in
             ``pending_skills`` after every model response (``on_llm_end``) and
-            injected at the start of the next turn.  Useful for quality checks,
-            memory consolidation, or review workflows.  Defaults to ``False``.
+            injected at the start of the next turn.  In a single-agent run it
+            therefore reaches every LLM call except the first, so a run that
+            finishes in one call never gets it.  Defaults to ``False``.
 
     Example::
 
